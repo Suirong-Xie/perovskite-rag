@@ -1,0 +1,76 @@
+# ── Virtual Environment ──
+.RAGenv/
+venv/
+.venv/
+
+# ── Large Data Files ──
+*.npy
+*.npz
+*.h5
+*.hdf5
+sunny-rag/data*/vectors.npy
+sunny-rag/data*/texts.jsonl
+sunny-rag/data*/id_to_index.json
+
+# ── Qdrant Data ──
+data/qdrant_data/
+
+# ── Chunked Data ──
+data/chunked_data/
+
+# ── Backups ──
+backups/
+*.tar.gz
+*.zip
+
+# ── Logs ──
+logs/
+*.log
+
+# ── Sessions (runtime data) ──
+server/v4/sessions/
+server/v4/sessions.json
+server/v4/sessions.json.bak
+
+# ── Annotated PDFs (generated) ──
+server/v4/annotated_pdfs/
+
+# ── Python Cache ──
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# ── IDE / Editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Environment & Secrets ──
+.env
+.env.local
+*.key
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── Backup files ──
+*.bak
+*.bak2
+*.bak3
+*.backup
+*.pre_refactor
+
+# ── Deprecated version markers ──
+*.v2_bak
+
+# ── Chrome Profile (data pipeline residue) ──
+data/chrome_profile/
+
+# ── Pipeline state ──
+data/pipeline/
