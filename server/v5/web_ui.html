@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sunny · 钙钛矿科研助手</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@350;400;500;530&family=JetBrains+Mono:wght@400;450&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════
+   Sunny RAG · Quiet Laboratory
+   ═══════════════════════════════════════════════ */
+
+:root {
+  --bg:       #0d1117;
+  --bg2:      #12161d;
+  --surface:  #161b22;
+  --border:   #21262d;
+  --border2:  #30363d;
+  --text:     #c9d1d9;
+  --text2:    #8b949e;
+  --text3:    #5c6370;
+  --accent:   #d2a85c;
+  --link:     #79b8ff;
+  --think:    #8b949e;
+  --tool:     #b3925c;
+  --err:      #f85149;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0 }
+html, body {
+  height: 100%;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 350;
+  background: var(--bg);
+  color: var(--text);
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+}
+body { display: flex; overflow: hidden }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px }
+::-webkit-scrollbar-track { background: transparent }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 10px }
+::-webkit-scrollbar-thumb:hover { background: var(--text3) }
+
+/* ── Sidebar ── */
+nav {
+  width: 240px; min-width: 240px;
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  font-size: .82rem;
+}
+nav header {
+  padding: 22px 18px 14px;
+  border-bottom: 1px solid var(--border);
+}
+nav header .brand {
+  font-size: .92rem; font-weight: 530; color: var(--text);
+  margin-bottom: 14px; letter-spacing: -.2px;
+}
+nav header .brand i { color: var(--accent); font-style: normal }
+nav header button {
+  background: none; border: 1px solid var(--border2); color: var(--text2);
+  padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: .78rem;
+  font-family: inherit; font-weight: 400; width: 100%; text-align: left;
+  transition: all .15s; margin-bottom: 4px;
+}
+nav header button:hover { background: var(--surface); color: var(--text); border-color: var(--text3) }
+nav .sessions { flex: 1; overflow-y: auto; padding: 8px 10px }
+nav .sessions .item {
+  padding: 8px 10px; border-radius: 6px; cursor: pointer;
+  margin-bottom: 2px; color: var(--text2); transition: all .12s;
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: .8rem; border: 1px solid transparent;
+}
+nav .sessions .item:hover { background: rgba(255,255,255,.02); color: var(--text) }
+nav .sessions .item.on { background: rgba(210,168,92,.06); color: var(--text); border-color: rgba(210,168,92,.15) }
+nav .sessions .item .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis }
+nav .sessions .item .acts { display: none; gap: 2px; flex-shrink: 0; margin-left: 6px }
+nav .sessions .item:hover .acts { display: flex }
+nav .sessions .item .acts button {
+  background: none; border: none; cursor: pointer; padding: 3px 5px;
+  font-size: .65rem; border-radius: 4px; color: var(--text3);
+}
+nav .sessions .item .acts button:hover { background: rgba(255,255,255,.06); color: var(--text) }
+nav footer { padding: 10px 18px; border-top: 1px solid var(--border); font-size: .68rem; color: var(--text3) }
+
+/* ── Main ── */
+main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative }
+
+/* ── Chat ── */
+.chat-header {
+  padding: 16px 32px; border-bottom: 1px solid var(--border);
+  font-size: .82rem; color: var(--text3); display: flex; gap: 12px;
+  align-items: baseline; background: var(--bg); flex-shrink: 0;
+}
+.chat-header strong { color: var(--text); font-weight: 530; cursor: pointer }
+.chat-header strong span { color: var(--accent) }
+
+/* ── Messages ── */
+.messages {
+  flex: 1; overflow-y: auto; padding: 32px 32px;
+  max-width: 780px; margin: 0 auto; width: 100%;
+}
+.msg { margin-bottom: 28px; animation: in .2s ease-out }
+@keyframes in { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: translateY(0) } }
+.msg.user { text-align: right }
+.msg.user p {
+  display: inline-block; background: var(--surface); color: var(--text);
+  padding: 9px 16px; border-radius: 8px; max-width: 75%; text-align: left;
+  font-size: .88rem; line-height: 1.5; border: 1px solid var(--border);
+}
+.msg.assistant { font-size: .88rem; line-height: 1.68; color: var(--text) }
+.msg.assistant p { margin-bottom: 10px }
+.msg.assistant p:last-child { margin-bottom: 0 }
+.msg.assistant table { border-collapse: collapse; margin: 12px 0; font-size: .84rem; width: 100% }
+.msg.assistant th, .msg.assistant td { border: 1px solid var(--border); padding: 7px 14px; text-align: left }
+.msg.assistant th { background: var(--surface); font-weight: 500; color: var(--text2) }
+.msg.assistant code { background: var(--surface); padding: 2px 6px; border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace; font-size: .8rem; color: var(--text) }
+.msg.assistant pre { background: var(--bg2); padding: 14px 18px; border-radius: 8px;
+  overflow-x: auto; font-size: .82rem; border: 1px solid var(--border) }
+.msg.assistant pre code { background: none; padding: 0 }
+.msg.assistant a { color: var(--link); text-decoration: none }
+.msg.assistant a:hover { text-decoration: underline }
+
+/* Agent events */
+.evt { font-size: .78rem; padding: 4px 0; display: flex; align-items: center; gap: 7px }
+.evt.think { color: var(--think); font-style: italic }
+.evt.tool { color: var(--tool) }
+.evt.tool .tag { background: rgba(210,168,92,.1); border: 1px solid rgba(210,168,92,.2);
+  padding: 1px 7px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: .72rem }
+.evt.err { color: var(--err) }
+
+.streaming::after { content: '▎'; animation: blink .8s step-end infinite; color: var(--accent); margin-left: 1px }
+@keyframes blink { 50% { opacity: 0 } }
+
+/* ── Sources panel ── */
+.sources-box {
+  margin-top: 14px; padding: 12px 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; font-size: .78rem;
+}
+.sources-box .sources-title {
+  color: var(--text2); font-weight: 500; margin-bottom: 8px;
+  font-size: .76rem; text-transform: uppercase; letter-spacing: .4px;
+}
+.sources-box .source-item {
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+  display: flex; align-items: baseline; gap: 8px; cursor: pointer;
+  transition: background .12s; border-radius: 3px; padding: 6px;
+}
+.sources-box .source-item:last-child { border-bottom: none }
+.sources-box .source-item:hover { background: rgba(255,255,255,.02) }
+.sources-box .source-item .s-jn {
+  color: var(--accent); font-weight: 500; font-size: .7rem;
+  text-transform: uppercase; letter-spacing: .3px; white-space: nowrap;
+  min-width: 60px;
+}
+.sources-box .source-item .s-src {
+  color: var(--link); font-family: 'JetBrains Mono', monospace; font-size: .74rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sources-box .source-item .s-pv {
+  color: var(--text3); font-size: .72rem; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Typing dots */
+.dots { display: flex; gap: 3px; padding: 6px 0 }
+.dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--text3); animation: b 1.2s infinite }
+.dots span:nth-child(2) { animation-delay: .2s }
+.dots span:nth-child(3) { animation-delay: .4s }
+@keyframes b { 0%,60%,100% { transform: translateY(0) } 30% { transform: translateY(-4px); background: var(--accent) } }
+
+/* ── Welcome ── */
+.welcome {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 20px; padding: 40px; text-align: center;
+}
+.welcome .wl { font-size: 1.5rem; font-weight: 530; color: var(--text); letter-spacing: -.3px }
+.welcome .wl em { color: var(--accent); font-style: normal }
+.welcome .ws { font-size: .85rem; color: var(--text3); line-height: 1.6; max-width: 380px }
+.welcome .we { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 6px }
+.welcome .we button {
+  background: none; border: 1px solid var(--border2); color: var(--text2);
+  padding: 7px 16px; border-radius: 6px; cursor: pointer; font-size: .8rem;
+  font-family: inherit; transition: all .15s;
+}
+.welcome .we button:hover { background: var(--surface); color: var(--text); border-color: var(--text3) }
+.welcome .wi { width: 100%; max-width: 480px; display: flex; gap: 10px; margin-top: 12px }
+.welcome .wi input {
+  flex: 1; background: var(--surface); border: 1px solid var(--border2); border-radius: 8px;
+  padding: 12px 18px; font-size: .9rem; color: var(--text); font-family: inherit; outline: none;
+  transition: border-color .2s;
+}
+.welcome .wi input:focus { border-color: var(--text3) }
+.welcome .wi input::placeholder { color: var(--text3) }
+.welcome .wi button {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border2);
+  border-radius: 8px; padding: 12px 24px; font-size: .88rem; cursor: pointer;
+  font-family: inherit; font-weight: 450; transition: all .15s;
+}
+.welcome .wi button:hover { border-color: var(--accent); color: var(--accent) }
+
+/* ── Input area ── */
+.input-area {
+  padding: 16px 32px 22px; border-top: 1px solid var(--border);
+  background: var(--bg); flex-shrink: 0;
+}
+.input-row { display: flex; gap: 10px; align-items: flex-end; max-width: 780px; margin: 0 auto }
+.input-row textarea {
+  flex: 1; background: var(--surface); border: 1px solid var(--border2);
+  border-radius: 8px; padding: 12px 16px; font-family: inherit; font-size: .88rem;
+  resize: none; outline: none; max-height: 130px; line-height: 1.5; color: var(--text);
+  transition: border-color .2s;
+}
+.input-row textarea:focus { border-color: var(--text3) }
+.input-row textarea::placeholder { color: var(--text3) }
+.input-row button {
+  padding: 10px 22px; border-radius: 8px; font-size: .85rem; font-weight: 450;
+  cursor: pointer; font-family: inherit; transition: all .15s; white-space: nowrap;
+  border: 1px solid var(--border2);
+}
+.btn-send { background: var(--surface); color: var(--text) }
+.btn-send:hover { border-color: var(--accent); color: var(--accent) }
+.btn-send:disabled { opacity: .35; cursor: default; border-color: var(--border2); color: var(--text2) }
+.btn-stop { background: rgba(248,81,73,.1); color: var(--err); border-color: rgba(248,81,73,.2) }
+.btn-stop:hover { background: rgba(248,81,73,.18) }
+
+/* ── PDF panel ── */
+.pdf-panel {
+  width: 50%; min-width: 400px; background: var(--bg);
+  border-left: 1px solid var(--border); display: none; flex-direction: column;
+}
+.pdf-panel.on { display: flex }
+.pdf-bar { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex;
+  justify-content: space-between; align-items: center; font-size: .82rem; color: var(--text2); flex-shrink: 0;
+  background: var(--bg2); }
+.pdf-bar button { background: none; border: none; cursor: pointer; color: var(--text3);
+  font-size: 1.1rem; padding: 2px 8px; border-radius: 4px }
+.pdf-bar button:hover { color: var(--text); background: rgba(255,255,255,.04) }
+.pdf-panel iframe { flex: 1; border: none; background: #1a1d22; color-scheme: dark }
+
+/* ── Library modal ── */
+.modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.55);
+  z-index: 100; justify-content: center; align-items: center;
+}
+.modal-overlay.on { display: flex }
+.modal {
+  background: var(--bg2); border: 1px solid var(--border2); border-radius: 12px;
+  width: 92%; max-width: 900px; max-height: 84vh; display: flex; flex-direction: column;
+  overflow: hidden; box-shadow: 0 16px 48px rgba(0,0,0,.4);
+}
+.modal-header { padding: 18px 24px; border-bottom: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center; flex-shrink: 0 }
+.modal-header strong { font-weight: 500; font-size: .95rem }
+.modal-header button { background: none; border: none; cursor: pointer; color: var(--text3);
+  font-size: 1.2rem; padding: 4px 8px; border-radius: 4px }
+.modal-header button:hover { color: var(--text); background: rgba(255,255,255,.04) }
+.modal-filters { padding: 10px 24px; display: flex; gap: 10px; border-bottom: 1px solid var(--border); flex-shrink: 0 }
+.modal-filters select {
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 6px;
+  padding: 6px 10px; font-size: .8rem; color: var(--text2); font-family: inherit; cursor: pointer; outline: none
+}
+.modal-filters select:focus { border-color: var(--text3) }
+.modal-filters span { font-size: .8rem; color: var(--text3); align-self: center }
+.modal-list { flex: 1; overflow-y: auto; padding: 10px 24px }
+.paper-row { padding: 12px 14px; border-bottom: 1px solid var(--border); transition: background .12s; border-radius: 4px }
+.paper-row:hover { background: rgba(255,255,255,.01) }
+.paper-row .jn { font-size: .7rem; color: var(--accent); font-weight: 500; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px }
+.paper-row .src { font-size: .76rem; color: var(--text3); font-family: 'JetBrains Mono', monospace }
+.paper-row .pv { font-size: .82rem; color: var(--text2); margin-top: 4px; line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden }
+.paper-row .acts { margin-top: 8px; display: flex; gap: 8px }
+.paper-row .acts button {
+  padding: 4px 12px; border-radius: 5px; cursor: pointer; font-size: .76rem;
+  font-family: inherit; background: none; border: 1px solid var(--border2); color: var(--text2); transition: all .15s
+}
+.paper-row .acts button:hover { background: var(--surface); color: var(--text); border-color: var(--text3) }
+.paper-row .acts .btn-primary { border-color: rgba(210,168,92,.25); color: var(--accent) }
+.paper-row .acts .btn-primary:hover { background: rgba(210,168,92,.08) }
+.modal-pager { padding: 12px 24px; border-top: 1px solid var(--border);
+  display: flex; justify-content: center; gap: 10px; align-items: center; flex-shrink: 0 }
+.modal-pager button {
+  padding: 5px 16px; border: 1px solid var(--border2); border-radius: 6px;
+  background: transparent; cursor: pointer; font-size: .8rem; color: var(--text2); font-family: inherit; transition: all .15s
+}
+.modal-pager button:hover { background: var(--surface); color: var(--text) }
+.modal-pager button:disabled { opacity: .3; cursor: default }
+.modal-pager small { font-size: .8rem; color: var(--text3) }
+</style>
+</head>
+<body>
+
+<nav>
+  <header>
+    <div class="brand">Sunny<i>RAG</i></div>
+    <button onclick="newChat()">+ 新对话</button>
+    <button onclick="openLibrary()">论文库</button>
+  </header>
+  <div class="sessions" id="sessionList"></div>
+  <footer>chunked_v3 · DeepSeek</footer>
+</nav>
+
+<main>
+  <div class="chat-header">
+    <strong onclick="newChat()">钙钛矿 AI 助手 <span>·</span></strong>
+    <span id="chatStatus">就绪</span>
+  </div>
+  <div class="messages" id="messages"></div>
+  <div class="input-area">
+    <div class="input-row">
+      <textarea id="inputBox" rows="1" placeholder="输入你的问题…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,130)+'px'"></textarea>
+      <button class="btn-send" id="sendBtn" onclick="sendMessage()">发送</button>
+      <button class="btn-stop" id="stopBtn" onclick="stopGeneration()" style="display:none">停止</button>
+    </div>
+  </div>
+</main>
+
+<div class="pdf-panel" id="pdfPanel">
+  <div class="pdf-bar">
+    <span id="pdfPanelTitle"></span>
+    <button onclick="closePdfPanel()">×</button>
+  </div>
+  <iframe id="pdfPanelFrame"></iframe>
+</div>
+
+<div class="modal-overlay" id="libOverlay" onclick="if(event.target===this)closeLibrary()">
+  <div class="modal">
+    <div class="modal-header">
+      <strong>论文库</strong>
+      <button onclick="closeLibrary()">×</button>
+    </div>
+    <div class="modal-filters">
+      <select id="jf" onchange="filterPapers()"><option value="">所有期刊</option></select>
+      <select id="yf" onchange="filterPapers()"><option value="">所有年份</option></select>
+      <span id="paperCount"></span>
+    </div>
+    <div class="modal-list" id="paperList"></div>
+    <div class="modal-pager">
+      <button id="prevPage" onclick="pagePapers(-1)">‹</button>
+      <small id="pageInfo"></small>
+      <button id="nextPage" onclick="pagePapers(1)">›</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="pdfModalOverlay" onclick="if(event.target===this)closePdfModal()">
+  <div class="modal" style="height:92%">
+    <div class="modal-header">
+      <span id="modalPdfTitle" style="font-size:.82rem;color:var(--text2)"></span>
+      <button onclick="closePdfModal()">×</button>
+    </div>
+    <iframe id="modalPdfFrame" style="flex:1;border:none;background:#1a1d22;color-scheme:dark"></iframe>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script>
+/* ═══════════════════════════════════════════════
+   Application Logic
+   ═══════════════════════════════════════════════ */
+
+let sid = null, busy = false, hasMsg = false;
+let papers = null, page = 1;
+let ctrl = null, taskId = null;
+window._fc = {};
+
+(async function init(){
+  const s = localStorage.getItem('ss');
+  if(s) { sid = s; await load(s) }
+  await renderSessions();
+})();
+
+async function load(id){
+  const r = await fetch('/api/sessions/'+id+'/messages');
+  const d = await r.json();
+  const el = document.getElementById('messages'); el.innerHTML = '';
+  if(d.messages && d.messages.length) {
+    hasMsg = true;
+    for(const m of d.messages) add(m.role, m.content);
+    scrollDown();
+    await resume(id);
+  } else { hasMsg = false; welcome() }
+}
+
+async function resume(id){
+  const r = await fetch('/api/chat/tasks/active'); const d = await r.json();
+  const ts = (d.tasks||{})[id]; if(!ts||!ts.length) return;
+  const t = ts.find(x=>!x.done); if(!t) return;
+  const b = document.querySelector('.msg.assistant:last-child');
+  if(!b) return;
+  window._fc[t.task_id] = b.textContent;
+  streamTask(t.task_id, b.textContent.length);
+}
+
+function welcome(){
+  document.getElementById('messages').innerHTML =
+    '<div class="welcome">'+
+    '<div class="wl">Perovskite<em>GPT</em></div>'+
+    '<div class="ws">基于 Nature 系列钙钛矿论文知识库<br>你的 AI 科研助手，让文献为你工作</div>'+
+    '<div class="we">'+
+    '<button onclick="quick(\'SAM分子层为什么可以作为空穴传输层？\')">SAM 空穴传输层</button>'+
+    '<button onclick="quick(\'提升钙钛矿稳定性的主要方案\')">稳定性方案</button>'+
+    '<button onclick="quick(\'MeO-2PACz和Me-4PACz的对比\')">SAM 材料对比</button>'+
+    '<button onclick="quick(\'FAPbI₃的带隙与效率上限\')">FAPbI₃ 性能</button>'+
+    '</div>'+
+    '<div class="wi">'+
+    '<input id="wi" placeholder="输入你的问题…" onkeydown="if(event.key===\'Enter\'){event.preventDefault();qw()}">'+
+    '<button onclick="qw()">发送</button></div></div>';
+}
+
+async function renderSessions(){
+  const r = await fetch('/api/sessions'); const d = await r.json();
+  const list = document.getElementById('sessionList'); list.innerHTML = '';
+  if(!sid) { welcome(); hasMsg = false }
+  for(const s of d.sessions){
+    const div = document.createElement('div');
+    div.className = 'item' + (s.id===sid?' on':'');
+    div.innerHTML = '<span class="t" onclick="switchTo(\''+s.id+'\')">'+esc(s.title)+'</span>'+
+      '<span class="acts">'+
+      '<button onclick="event.stopPropagation();rn(\''+s.id+'\')" title="重命名">✎</button>'+
+      '<button onclick="event.stopPropagation();rm(\''+s.id+'\')" title="删除">×</button></span>';
+    list.appendChild(div);
+  }
+}
+
+async function newChat(){
+  if(ctrl) { ctrl.abort(); ctrl = null }
+  hasMsg = false; sid = null; localStorage.removeItem('ss');
+  welcome(); closePdfPanel();
+  document.querySelectorAll('nav .item').forEach(e=>e.classList.remove('on'));
+}
+
+function qw(){ const v = document.getElementById('wi').value.trim(); if(v){ document.getElementById('inputBox').value = v; sendMessage() } }
+
+async function switchTo(id){
+  if(id===sid) return;
+  if(ctrl) { ctrl.abort(); ctrl = null }
+  sid = id; localStorage.setItem('ss', id);
+  closePdfPanel(); await load(id); await renderSessions();
+}
+
+async function streamTask(taskId, offset){
+  if(ctrl) ctrl.abort();
+  const c = new AbortController(); ctrl = c;
+  const el = document.querySelector('.msg.assistant:last-child');
+  if(!el) return;
+  const guard = sid;
+
+  const resp = await fetch('/api/chat/'+taskId+'/stream?offset='+offset, {signal:c.signal});
+  if(!resp.ok||!resp.body) return;
+  const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
+  (async function pump(){
+    while(true){
+      try { const{value,done}=await reader.read(); if(guard!==sid) return;
+        if(done) { el.classList.remove('streaming'); return }
+        buf += dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||'';
+        for(const l of lines){ if(!l.startsWith('data: ')) continue;
+          try { const d=JSON.parse(l.slice(6));
+            if(d.type==='text'){
+              window._fc[taskId]=(window._fc[taskId]||'')+d.content;
+              el.innerHTML = md(window._fc[taskId]); el.classList.add('streaming'); scrollDown();
+            } else if(d.type==='sources'){
+              window._sources = d.data;
+              renderSourcesBox(el, window._sources);
+            }
+          } catch(_){} }
+      } catch(e) { if(e.name!=='AbortError') console.error(e); return }
+    }
+  })();
+}
+
+async function rn(id){
+  const el = document.querySelector('.item.on .t');
+  const old = el?el.textContent:'';
+  const t = prompt('重命名:', old); if(!t||!t.trim()) return;
+  await fetch('/api/sessions/'+id, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.trim()})});
+  await renderSessions();
+}
+
+async function rm(id){
+  if(!confirm('删除？')) return;
+  await fetch('/api/sessions/'+id, {method:'DELETE'});
+  if(sid===id) { sid=null; const r=await fetch('/api/sessions'); const d=await r.json();
+    if(d.sessions.length) await switchTo(d.sessions[0].id); else await newChat(); }
+  else await renderSessions();
+}
+
+async function sendMessage(){
+  const inp = document.getElementById('inputBox'); const text = inp.value.trim();
+  if(!text || busy) return; inp.value = ''; inp.style.height = 'auto';
+
+  if(!sid){ const r=await fetch('/api/sessions',{method:'POST'}); const d=await r.json();
+    sid=d.id; localStorage.setItem('ss',sid); await renderSessions(); }
+
+  add('user', text); hasMsg = true;
+  const wel = document.querySelector('.welcome'); if(wel) wel.remove();
+
+  busy = true;
+  document.getElementById('sendBtn').style.display = 'none';
+  document.getElementById('stopBtn').style.display = 'inline-block';
+  document.getElementById('chatStatus').textContent = '思考中…';
+
+  const msgEl = add('assistant', '<div class="dots"><span></span><span></span><span></span></div>');
+  const bubble = msgEl;
+
+  try {
+    const r0 = await fetch('/api/chat',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message:text,session_id:sid})});
+    if(!r0.ok){ bubble.innerHTML = '<span class="evt err">请求失败 HTTP '+r0.status+'</span>'; return done() }
+    const{task_id}=await r0.json(); taskId=task_id; window._fc[task_id]='';
+
+    const c = new AbortController(); ctrl = c; c._tid = taskId;
+    const r1 = await fetch('/api/chat/'+task_id+'/stream?offset=0',{signal:c.signal});
+    if(!r1.ok||!r1.body) { bubble.innerHTML = '<span class="evt err">连接失败</span>'; return done() }
+
+    const reader = r1.body.getReader(); const dec = new TextDecoder(); let buf = ''; const guard = sid;
+    while(true){
+      const{value,done}=await reader.read(); if(guard!==sid) return; if(done) break;
+      buf += dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||'';
+      for(const l of lines){ if(!l.startsWith('data: ')) continue;
+        try{ const d=JSON.parse(l.slice(6));
+          if(d.type==='text'){
+            window._fc[task_id]+=d.content;
+            bubble.innerHTML = md(window._fc[task_id]); bubble.classList.add('streaming'); scrollDown();
+          } else if(d.type==='sources'){
+            // 系统验证过的参考来源，在回答下方渲染
+            window._sources = d.data;
+            renderSourcesBox(bubble, window._sources);
+          }
+        }catch(_){} }
+    }
+    bubble.classList.remove('streaming');
+  } catch(e) { if(e.name!=='AbortError') { bubble.innerHTML = '<span class="evt err">错误: '+esc(e.message)+'</span>' } }
+  done();
+  function done(){ busy=false;document.getElementById('sendBtn').style.display='inline-block';
+    document.getElementById('stopBtn').style.display='none';
+    document.getElementById('chatStatus').textContent = '就绪';
+    renderSessions(); }
+}
+
+function stopGeneration(){
+  const t = (ctrl&&ctrl._tid)||taskId;
+  if(ctrl) ctrl.abort();
+  if(t) fetch('/api/chat/'+t+'/cancel',{method:'POST'}).catch(()=>{});
+  taskId=null;
+}
+
+function quick(t){ document.getElementById('inputBox').value=t; sendMessage() }
+function add(role, content){
+  const c=document.getElementById('messages'); const d=document.createElement('div');
+  d.className='msg '+role;
+  d.innerHTML = role==='user' ? '<p>'+esc(content)+'</p>' : md(content);
+  c.appendChild(d); scrollDown(); return d;
+}
+function scrollDown(){ const c=document.getElementById('messages'); c.scrollTop=c.scrollHeight }
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+function md(t){ return marked.parse(t.replace(/\[📄\]\(([^\s)]+)\)/g,'<a href="$1">📄</a>')) }
+
+/* Sources panel */
+function renderSourcesBox(el, sources){
+  // 移除旧的 sources box
+  const old = el.querySelector('.sources-box');
+  if(old) old.remove();
+  if(!sources||!sources.length) return;
+
+  let html = '<div class="sources-box"><div class="sources-title">参考来源 ('+sources.length+')</div>';
+  for(const s of sources){
+    html += '<div class="source-item" onclick="openPdf(\''+escAttr(s.file_id)+'\')" title="'+escAttr(s.content_preview||'')+'">'+
+      '<span class="s-jn">'+esc(s.journal_name)+'</span>'+
+      '<span class="s-src">📄 '+esc(s.source)+'</span>'+
+      '<span class="s-pv">'+esc((s.content_preview||'').slice(0,120))+'</span>'+
+      '</div>';
+  }
+  html += '</div>';
+  el.insertAdjacentHTML('beforeend', html);
+}
+function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;') }
+
+/* PDF */
+function pdfUrl(fid){ return '/api/pdf/'+fid }
+function fid(src){ return String(src).replace(/\.pdf$/,'') }
+function openPdf(src){ const f=fid(src);
+  document.getElementById('pdfPanelTitle').textContent=f;
+  document.getElementById('pdfPanel').classList.add('on');
+  document.getElementById('pdfPanelFrame').src=pdfUrl(f); }
+function closePdfPanel(){ document.getElementById('pdfPanel').classList.remove('on');
+  document.getElementById('pdfPanelFrame').src=''; }
+function openPdfModal(src){ const f=fid(src);
+  document.getElementById('modalPdfTitle').textContent=f;
+  document.getElementById('pdfModalOverlay').classList.add('on');
+  document.getElementById('modalPdfFrame').src=pdfUrl(f); }
+function closePdfModal(){ document.getElementById('pdfModalOverlay').classList.remove('on');
+  document.getElementById('modalPdfFrame').src=''; }
+
+/* Library */
+async function openLibrary(){
+  document.getElementById('libOverlay').classList.add('on');
+  if(!papers) await loadPapers();
+  updateFilters(); renderPapers();
+}
+function closeLibrary(){ document.getElementById('libOverlay').classList.remove('on') }
+async function loadPapers(){ const r=await fetch('/api/papers?page_size=100'); papers=await r.json() }
+function updateFilters(){
+  const cs = papers.categories||[];
+  document.getElementById('jf').innerHTML='<option value="">所有期刊</option>'+cs.map(c=>'<option value="'+c+'">'+c+'</option>').join('');
+  const ys=[...new Set((papers.papers||[]).map(p=>p.year).filter(Boolean))].sort((a,b)=>b-a);
+  document.getElementById('yf').innerHTML='<option value="">所有年份</option>'+ys.map(y=>'<option value="'+y+'">'+y+'</option>').join('');
+}
+function filterPapers(){ page=1;renderPapers() }
+function pagePapers(d){ page=Math.max(1,page+d);renderPapers() }
+async function renderPapers(){
+  const jf=document.getElementById('jf'),yf=document.getElementById('yf');
+  let url='/api/papers?page='+page+'&page_size=20';
+  if(jf.value)url+='&category='+encodeURIComponent(jf.value);
+  if(yf.value)url+='&year='+encodeURIComponent(yf.value);
+  const r=await fetch(url);const d=await r.json();
+  const list=document.getElementById('paperList');list.innerHTML='';
+  document.getElementById('paperCount').textContent=d.total+' 篇';
+  document.getElementById('pageInfo').textContent=d.page+' / '+d.total_pages;
+  document.getElementById('prevPage').disabled=d.page<=1;
+  document.getElementById('nextPage').disabled=d.page>=d.total_pages;
+  for(const p of d.papers){
+    const div=document.createElement('div');div.className='paper-row';
+    div.innerHTML='<div class="jn">'+esc(p.journal)+'</div>'+
+      '<div class="src">'+esc(p.source)+'</div>'+
+      '<div class="pv">'+esc((p.title_preview||'').slice(0,200))+'</div>'+
+      '<div class="acts">'+
+      '<button class="btn-primary" onclick="closeLibrary();interpret(\''+p.id+'\')">解读</button>'+
+      '<button onclick="openPdfModal(\''+p.source+'\')">PDF</button></div>';
+    list.appendChild(div);
+  }
+}
+async function interpret(id){
+  if(!sid){ const r=await fetch('/api/sessions',{method:'POST'});const d=await r.json();
+    sid=d.id;localStorage.setItem('ss',sid); }
+  document.getElementById('inputBox').value='解读这篇论文';sendMessage();
+}
+
+document.addEventListener('click',function(e){
+  const a=e.target.closest('a[href^="/api/pdf/"]');if(!a)return;
+  e.preventDefault();
+  const raw=new URL(a.href,location.origin).pathname.replace('/api/pdf/','');
+  if(e.ctrlKey||e.metaKey) openPdfModal(raw); else openPdf(raw);
+});
+</script>
+</body>
+</html>
