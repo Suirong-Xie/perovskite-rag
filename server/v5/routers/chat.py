@@ -59,6 +59,9 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
                         f"💭 {event.data['content']}\n\n"
                     )
             elif event.type == "tool_call":
+                # 工具调用开始：之前实时推送的 text 是 thinking，
+                # 重置 full_content 避免将思考过程存入历史
+                full_content = ""
                 name = event.data["name"]
                 args = event.data.get("arguments", {})
                 async with _tasks_lock:
@@ -99,9 +102,6 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
 
         log(f"TASK {task_id} agent done: sid={sid} total_chars={len(full_content)}")
 
-        if full_content:
-            store.append_message(sid, "assistant", full_content)
-
         # ── 系统链路：从 TaskInfo.sources 验证 PDF、做高亮、构建 sources 列表 ──
         async with _tasks_lock:
             task_sources = list(_tasks[task_id].sources)
@@ -125,29 +125,53 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
             async with _tasks_lock:
                 _tasks[task_id].pdfs_validated.add(file_id)
 
-            # 构建验证过的 source 条目
+            # PDF 高亮标注：使用搜索结果的原始 chunk content
             content_preview = (s.get("content", "") or "")[:200].replace("\n", " ").strip()
+            highlight_meta = {}
+            chunk_text = s.get("content", "")[:2000]
+            if chunk_text:
+                try:
+                    pdf_out, highlight_meta = annotate_pdf(pdf_path_str, [chunk_text])
+                    if pdf_out:
+                        annot_count += 1
+                        log(f"TASK {task_id} ANNOTATE: {file_id} → highlighted")
+                except Exception as e:
+                    log(f"TASK {task_id} ANNOTATE error for {file_id}: {e}")
+
+            # 构建验证过的 source 条目（含高亮元数据）
             validated_sources.append({
                 "file_id": file_id,
                 "journal_name": journal_name or "Unknown",
                 "source": source,
                 "content_preview": content_preview,
                 "pdf_url": f"/api/pdf/{file_id}",
+                "highlight": highlight_meta,  # 高亮页码和 chunk 信息
             })
-
-            # PDF 高亮标注：使用搜索结果的原始 chunk content
-            chunk_text = s.get("content", "")[:2000]
-            if chunk_text:
-                try:
-                    result = annotate_pdf(pdf_path_str, [chunk_text])
-                    if result:
-                        annot_count += 1
-                        log(f"TASK {task_id} ANNOTATE: {file_id} → highlighted")
-                except Exception as e:
-                    log(f"TASK {task_id} ANNOTATE error for {file_id}: {e}")
 
         log(f"TASK {task_id} SOURCES: {len(validated_sources)} validated, "
             f"{annot_count} annotated")
+
+        # ── 引用幻觉校验：检查回答中引用的 File ID 是否都经过 PDF 验证 ──
+        if full_content:
+            import re as _re
+            cited_ids = set(_re.findall(r'\[📄\]\(/api/pdf/([^)]+)\)', full_content))
+            async with _tasks_lock:
+                validated_ids = set(_tasks[task_id].pdfs_validated)
+            fake_ids = cited_ids - validated_ids
+            if fake_ids:
+                log(f"TASK {task_id} HALLUCINATION: {len(fake_ids)} fake citations: {fake_ids}")
+                for fid in fake_ids:
+                    # 把假引用替换为醒目的警告标记
+                    full_content = full_content.replace(
+                        f"[📄](/api/pdf/{fid})",
+                        f"[⚠️ 未验证引用](/api/pdf/{fid})"
+                    )
+            else:
+                log(f"TASK {task_id} CITATION CHECK: all {len(cited_ids)} citations valid")
+
+        # 持久化：消息 + 参考来源一起写入 session 历史
+        if full_content:
+            store.append_message(sid, "assistant", full_content, validated_sources)
 
         # 存储验证后的 sources 到 task，供 SSE 端点推送
         if validated_sources:

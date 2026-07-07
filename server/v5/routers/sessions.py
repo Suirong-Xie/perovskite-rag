@@ -39,15 +39,14 @@ def get_session_messages(session_id: str):
     if session_id not in store.sessions:
         return {"messages": []}
     msgs = store.get_history(session_id)
-    # 检查是否有活跃的生成任务
+    # 检查是否有活跃的生成任务（即使尚无输出，也告诉前端有任务在跑）
     for tid, t in _tasks.items():
         if t.sid == session_id and not t.done:
             full = "".join(t.chunks)
-            if full:
-                msgs = msgs + [{
-                    "role": "assistant",
-                    "content": full + "\n\n_(回答未完成)_",
-                    "_task_id": tid,
-                }]
+            msgs = msgs + [{
+                "role": "assistant",
+                "content": full + ("\n\n_(回答未完成)_" if full else ""),
+                "_task_id": tid,
+            }]
             break
     return {"messages": msgs}

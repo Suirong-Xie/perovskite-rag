@@ -93,8 +93,8 @@ class SessionStore:
             self.sessions[sid]["title"] = title.strip()[:60]
             self._save()
 
-    def append_message(self, sid: str, role: str, content: str):
-        """追加消息到 session 历史"""
+    def append_message(self, sid: str, role: str, content: str, sources: list = None):
+        """追加消息到 session 历史，可选附带参考来源列表"""
         session_dir = SESSIONS_DIR / sid
         session_dir.mkdir(parents=True, exist_ok=True)
         history_file = session_dir / "history.json"
@@ -102,7 +102,10 @@ class SessionStore:
         if history_file.exists():
             with open(history_file) as f:
                 msgs = json.load(f)
-        msgs.append({"role": role, "content": content})
+        msg = {"role": role, "content": content}
+        if sources:
+            msg["sources"] = sources
+        msgs.append(msg)
         with open(history_file, "w") as f:
             json.dump(msgs, f, ensure_ascii=False)
             f.flush()

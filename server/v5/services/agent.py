@@ -26,9 +26,9 @@ import re
 import os
 import subprocess
 from typing import AsyncGenerator, Optional, Callable
-from ..core.config import AGENT_MAX_ROUNDS, PAPERS_DIR, JOURNALS_PDF_DIR
+from ..core.config import AGENT_MAX_ROUNDS, PAPERS_DIR, JOURNALS_PDF_DIR, LLM_BACKEND
 from ..core.schemas import AgentEvent, ToolCall, ToolResult
-from ..core.llm import chat_completion_stream
+from ..core.llm import chat_completion_stream, chat_completion_with_tools
 from .retrieval import search_papers
 
 # ── 工具定义 ──
@@ -342,8 +342,8 @@ async def run_agent_loop(
     ReAct Agent 循环 — async generator。
 
     每个 round:
-      1. 调用 LLM（streaming，内部累积）
-      2. 检测 <tool_call> JSON 块
+      1. 调用 LLM（streaming，实时推送 text chunks）
+      2. 检测 tool_call（原生 function calling 或文本 <tool_call> 解析）
          - 有 → 执行工具，yield AgentEvent.tool_call + tool_result，进入下一轮
          - 无 → yield AgentEvent.text，结束
 
@@ -362,79 +362,98 @@ async def run_agent_loop(
     # 添加用户消息
     messages.append({"role": "user", "content": user_message})
 
+    # 根据 LLM 后端选择工具调用方式
+    use_native_tools = (LLM_BACKEND == "deepseek")
+    if use_native_tools:
+        # 为原生 function calling 添加提示（工具通过 API tools 参数传入）
+        messages[0]["content"] += (
+            "\n\n你可以直接调用可用的函数（search_papers / read_paper）来检索和阅读文献。"
+            "请先用 search_papers 检索相关论文，必要时用 read_paper 深入阅读，"
+            "然后基于文献数据给出带引用的回答。"
+        )
+
     # Agent 循环
     for round_num in range(1, AGENT_MAX_ROUNDS + 1):
-        log(f"TASK {task_id} Round {round_num}/{AGENT_MAX_ROUNDS}")
+        log(f"TASK {task_id} Round {round_num}/{AGENT_MAX_ROUNDS} "
+            f"({'native' if use_native_tools else 'text'} tools)")
 
-        # 流式调用 LLM，累积全部输出
-        full_response = ""
-        try:
-            async for chunk in chat_completion_stream(messages):
-                full_response += chunk
-        except Exception as e:
-            log(f"TASK {task_id} Round {round_num} LLM error: {e}")
-            yield AgentEvent.error(f"LLM error in round {round_num}: {e}")
+        if use_native_tools:
+            # ── 原生 Function Calling 路径 ──
+            gen = _run_native_round(task_id, round_num, messages)
+        else:
+            # ── 文本 <tool_call> 解析路径 ──
+            gen = _run_text_round(task_id, round_num, messages)
+
+        tool_call = None
+        async for event in gen:
+            if event.type == "_tool_call":
+                # 内部信号：有工具调用需要执行
+                tool_call = event.data["tool_call"]
+            else:
+                yield event
+
+        if tool_call is None:
+            # 没有工具调用 → 最终回答（done 已在 gen 中 yield）
             return
 
-        if not full_response.strip():
-            log(f"TASK {task_id} Round {round_num} empty response")
-            yield AgentEvent.error("Empty response from LLM")
-            return
+        # 执行工具
+        log(f"TASK {task_id} Round {round_num} TOOL: {tool_call.name}")
 
-        # 检测 tool_call
-        tool_call = parse_tool_call(full_response)
+        yield AgentEvent.tool_call(tool_call.name, tool_call.arguments)
 
-        if tool_call is not None:
-            # 有 tool_call → 执行工具
-            log(f"TASK {task_id} Round {round_num} TOOL: {tool_call.name}")
+        result, raw_data = execute_tool(tool_call)
+        log(f"TASK {task_id} Round {round_num} TOOL RESULT: "
+            f"{tool_call.name} → {len(result.output)} chars"
+            f"{' ERROR: ' + result.error if result.error else ''}")
 
-            # 提取 tool_call 之外的文本作为 thinking
-            thinking_text = extract_text_without_tool_call(full_response)
-            if thinking_text:
-                yield AgentEvent.thinking(thinking_text)
+        yield AgentEvent.tool_result(
+            tool_call.name,
+            result.output[:300] if result.output else "(empty)",
+            result.error,
+        )
 
-            yield AgentEvent.tool_call(tool_call.name, tool_call.arguments)
+        # 将结构化原始数据通过 search_results 事件传出
+        if tool_call.name == "search_papers" and raw_data:
+            yield AgentEvent.search_results(raw_data)
+        elif tool_call.name == "read_paper" and raw_data:
+            yield AgentEvent.search_results([raw_data])
 
-            # 执行工具（返回 (ToolResult, raw_data) 元组）
-            result, raw_data = execute_tool(tool_call)
-            log(f"TASK {task_id} Round {round_num} TOOL RESULT: "
-                f"{tool_call.name} → {len(result.output)} chars"
-                f"{' ERROR: ' + result.error if result.error else ''}")
-
-            yield AgentEvent.tool_result(
-                tool_call.name,
-                result.output[:300] if result.output else "(empty)",
-                result.error,
-            )
-
-            # 将结构化原始数据通过 search_results 事件传出，
-            # 供 chat.py 累积到 TaskInfo.sources（PDF 寻回、高亮等系统链路）
-            if tool_call.name == "search_papers" and raw_data:
-                yield AgentEvent.search_results(raw_data)
-            elif tool_call.name == "read_paper" and raw_data:
-                yield AgentEvent.search_results([raw_data])
-
-            # 将 tool_call + result 追加到对话中
-            messages.append({"role": "assistant", "content": full_response.strip()})
+        # 追加工具调用和结果到对话历史
+        if use_native_tools:
+            # Native tools 格式：assistant 消息含 tool_calls + tool 角色消息
+            tool_call_id = tool_call.arguments.pop("_tool_call_id", f"call_{round_num}")
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.name,
+                        "arguments": json.dumps(tool_call.arguments, ensure_ascii=False),
+                    },
+                }],
+            })
+            result_content = result.output
+            if result.error:
+                result_content += f"\nError: {result.error}"
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": result_content,
+            })
+        else:
+            # Text tools 格式：assistant 消息 + system 消息
+            messages.append({
+                "role": "assistant",
+                "content": tool_call.arguments.pop("_full_response", ""),
+            })
             result_content = f"Tool result for {tool_call.name}:\n{result.output}"
             if result.error:
                 result_content += f"\nError: {result.error}"
             messages.append({"role": "system", "content": result_content})
 
-            # 继续下一轮
-            continue
-
-        # 没有 tool_call → 最终回答
-        log(f"TASK {task_id} Round {round_num} FINAL ANSWER: "
-            f"{len(full_response)} chars")
-
-        # 流式输出最终回答（按小块推送以保持流式体验）
-        chunk_size = 20
-        for i in range(0, len(full_response), chunk_size):
-            yield AgentEvent.text(full_response[i:i + chunk_size])
-
-        yield AgentEvent.done()
-        return
+        # 继续下一轮
 
     # 达到最大轮数
     log(f"TASK {task_id} Max rounds ({AGENT_MAX_ROUNDS}) reached, forcing final answer")
@@ -442,3 +461,98 @@ async def run_agent_loop(
         f"Reached maximum of {AGENT_MAX_ROUNDS} tool-calling rounds. "
         "Please try a more specific question."
     )
+
+
+async def _run_native_round(
+    task_id: str, round_num: int, messages: list[dict],
+) -> AsyncGenerator[AgentEvent, None]:
+    """使用原生 Function Calling 执行一轮 LLM 调用。
+    实时流式推送 text content，完成后检测 tool_calls。
+    如果有 tool_calls，yield 内部 _tool_call 事件；否则 yield done。
+    """
+    full_response = ""
+    tool_calls = None
+    try:
+        async for event in chat_completion_with_tools(messages, TOOLS):
+            if event["type"] == "text":
+                full_response += event["content"]
+                yield AgentEvent.text(event["content"])
+            elif event["type"] == "done":
+                tool_calls = event["tool_calls"]
+    except Exception as e:
+        log(f"TASK {task_id} Round {round_num} LLM error: {e}")
+        yield AgentEvent.error(f"LLM error in round {round_num}: {e}")
+        return
+
+    if not tool_calls and not full_response.strip():
+        log(f"TASK {task_id} Round {round_num} empty response")
+        yield AgentEvent.error("Empty response from LLM")
+        return
+
+    if tool_calls:
+        # 有工具调用：已实时推送的 text 是 thinking（chat.py 会在 tool_call 时重置）
+        log(f"TASK {task_id} Round {round_num} TOOL (native): {tool_calls[0]['name']}")
+
+        # 取第一个 tool_call（后续可扩展并行执行）
+        tc = tool_calls[0]
+        tc["arguments"]["_tool_call_id"] = tc.get("id", f"call_{round_num}")
+        yield AgentEvent("_tool_call", {"tool_call": ToolCall(tc["name"], tc["arguments"])})
+        return
+
+    # 没有 tool_call → 最终回答（文本已在流式推送中实时发送）
+    log(f"TASK {task_id} Round {round_num} FINAL ANSWER: {len(full_response)} chars")
+    yield AgentEvent.done()
+
+
+async def _run_text_round(
+    task_id: str, round_num: int, messages: list[dict],
+) -> AsyncGenerator[AgentEvent, None]:
+    """使用文本 <tool_call> 解析执行一轮 LLM 调用（OpenClaw fallback）。
+    实时流式推送 text chunks，检测 <tool_call> 块。
+    """
+    full_response = ""
+    maybe_tool = False
+    try:
+        async for chunk in chat_completion_stream(messages):
+            full_response += chunk
+            if not maybe_tool:
+                stripped = full_response.lstrip()
+                if "<tool_call>" in full_response:
+                    maybe_tool = True
+                elif stripped and "<tool_call>".startswith(stripped):
+                    maybe_tool = True
+                else:
+                    yield AgentEvent.text(chunk)
+    except Exception as e:
+        log(f"TASK {task_id} Round {round_num} LLM error: {e}")
+        yield AgentEvent.error(f"LLM error in round {round_num}: {e}")
+        return
+
+    if not full_response.strip():
+        log(f"TASK {task_id} Round {round_num} empty response")
+        yield AgentEvent.error("Empty response from LLM")
+        return
+
+    tool_call = parse_tool_call(full_response)
+
+    if tool_call is not None:
+        log(f"TASK {task_id} Round {round_num} TOOL (text): {tool_call.name}")
+
+        thinking_text = extract_text_without_tool_call(full_response)
+        if thinking_text and maybe_tool:
+            yield AgentEvent.thinking(thinking_text)
+
+        tool_call.arguments["_full_response"] = full_response.strip()
+        yield AgentEvent("_tool_call", {"tool_call": tool_call})
+        return
+
+    # 没有 tool_call → 最终回答
+    log(f"TASK {task_id} Round {round_num} FINAL ANSWER: {len(full_response)} chars")
+
+    if maybe_tool:
+        chunk_size = 20
+        for i in range(0, len(full_response), chunk_size):
+            yield AgentEvent.text(full_response[i:i + chunk_size])
+    # else: 文本已在流式推送中实时发送
+
+    yield AgentEvent.done()

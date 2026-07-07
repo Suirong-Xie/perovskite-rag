@@ -84,6 +84,123 @@ async def chat_completion_stream(
                         pass
 
 
+async def chat_completion_with_tools(
+    messages: list[dict],
+    tools: list[dict],
+    model: str = None,
+    timeout: float = 120.0,
+):
+    """
+    使用原生 function calling 的流式 chat completion。
+    返回 (text_content: str, tool_calls: list[dict] | None)。
+
+    tool_calls 格式: [{"id": "call_xxx", "name": "search_papers", "arguments": {...}}]
+
+    目前仅支持 DeepSeek 后端（OpenAI-compatible tools API）。
+    """
+    url, token, model_name = _get_backend_config()
+    if model:
+        model_name = model
+
+    # 将内部工具定义转为 OpenAI tools 格式
+    openai_tools = []
+    for t in tools:
+        properties = {}
+        required = []
+        for param_name, param_desc in t.get("parameters", {}).items():
+            # 简单推断类型：含 "Number" 或 "top_k" → integer，否则 string
+            param_type = "integer" if ("top_k" in param_name or "number" in param_desc.lower()) else "string"
+            properties[param_name] = {"type": param_type, "description": param_desc}
+            required.append(param_name)
+
+        openai_tools.append({
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            },
+        })
+
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "tools": openai_tools,
+        "stream": True,
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    text_content = ""
+    tool_calls_acc: dict[int, dict] = {}  # index → {id, name, arguments_str}
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream(
+            "POST", url, json=payload, headers=headers,
+        ) as resp:
+            if resp.status_code != 200:
+                body = await resp.aread()
+                raise RuntimeError(f"LLM API error: HTTP {resp.status_code} — {body[:300]!r}")
+
+            async for line in resp.aiter_lines():
+                if line.startswith("data: "):
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(data_str)
+                        delta = data["choices"][0].get("delta", {})
+
+                        # 文本内容
+                        if "content" in delta and delta["content"]:
+                            text_content += delta["content"]
+                            yield {"type": "text", "content": delta["content"]}
+
+                        # 工具调用（流式累积）
+                        if "tool_calls" in delta:
+                            for tc in delta["tool_calls"]:
+                                idx = tc.get("index", 0)
+                                if idx not in tool_calls_acc:
+                                    tool_calls_acc[idx] = {
+                                        "id": tc.get("id", ""),
+                                        "name": "",
+                                        "arguments_str": "",
+                                    }
+                                if "id" in tc and tc["id"]:
+                                    tool_calls_acc[idx]["id"] = tc["id"]
+                                func = tc.get("function", {})
+                                if "name" in func and func["name"]:
+                                    tool_calls_acc[idx]["name"] = func["name"]
+                                if "arguments" in func:
+                                    tool_calls_acc[idx]["arguments_str"] += func["arguments"]
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+    # 解析累积的 tool_calls
+    tool_calls = []
+    for idx in sorted(tool_calls_acc.keys()):
+        tc = tool_calls_acc[idx]
+        try:
+            args = json.loads(tc["arguments_str"]) if tc["arguments_str"].strip() else {}
+        except json.JSONDecodeError:
+            args = {}
+        if tc["name"]:
+            tool_calls.append({
+                "id": tc["id"],
+                "name": tc["name"],
+                "arguments": args,
+            })
+
+    # 最终 yield: 工具调用结果（如果有）
+    yield {"type": "done", "tool_calls": tool_calls if tool_calls else None}
+
+
 async def chat_completion(
     messages: list[dict],
     model: str = None,
