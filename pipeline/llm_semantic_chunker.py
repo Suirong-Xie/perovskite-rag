@@ -31,6 +31,11 @@ Return ONLY a JSON array of strings."""
 
 def extract_text(pdf_path):
     try:
+        from pdf_text_extractor import extract_text_column_aware
+        return extract_text_column_aware(pdf_path, max_chars=MAX_CHARS)
+    except ImportError:
+        pass
+    try:
         doc = fitz.open(pdf_path)
     except:
         return ""

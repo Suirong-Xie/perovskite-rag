@@ -30,6 +30,12 @@ OUTPUT (JSON only):
 
 def extract_text(p):
     try:
+        from pdf_text_extractor import extract_text_column_aware
+        return extract_text_column_aware(p, max_chars=MAX_CHARS)
+    except ImportError:
+        pass
+    # fallback
+    try:
         d = fitz.open(p)
     except:
         return ""
