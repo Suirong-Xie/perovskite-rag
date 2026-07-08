@@ -23,6 +23,7 @@ router = APIRouter()
 _tasks: dict[str, TaskInfo] = {}
 _tasks_lock = asyncio.Lock()
 _cleanup_time = 0
+_task_queues: dict[str, asyncio.Queue] = {}  # task_id → asyncio.Queue (SSE push)
 
 
 def log(msg: str):
@@ -39,6 +40,7 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
     Agent 完成后验证 PDF、做高亮标注、推送 sources 事件到前端。
     """
     full_content = ""
+    queue = _task_queues.get(task_id)
     try:
         async with _tasks_lock:
             if _tasks[task_id].cancelled:
@@ -52,6 +54,10 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
                 if _tasks[task_id].cancelled:
                     log(f"TASK {task_id} cancelled mid-agent")
                     return
+
+            # 推入 SSE queue（零延迟推送）
+            if queue:
+                await queue.put(event)
 
             if event.type == "thinking":
                 async with _tasks_lock:
@@ -268,6 +274,7 @@ async def chat_start(req: ChatRequest):
     task_id = uuid.uuid4().hex[:16]
     async with _tasks_lock:
         _tasks[task_id] = TaskInfo(sid)
+        _task_queues[task_id] = asyncio.Queue()
 
     store.append_message(sid, "user", req.message)
     asyncio.create_task(run_chat_pipeline(task_id, sid, req))
@@ -304,7 +311,32 @@ async def chat_stream(task_id: str, offset: int = Query(0, ge=0)):
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             return
 
-        # 轮询新 chunks
+        # 从 queue 推播事件（零延迟）fallback 到轮询
+        queue = _task_queues.get(task_id)
+        if queue:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30)
+                except asyncio.TimeoutError:
+                    break
+
+                if event.type == "text":
+                    yield f"data: {json.dumps({'type': 'text', 'content': event.data['content']})}\n\n"
+                elif event.type == "done":
+                    if task.sources_json and not sources_sent:
+                        sources_sent = True
+                        yield f"data: {json.dumps({'type': 'sources', 'data': json.loads(task.sources_json)})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+                elif event.type == "error":
+                    yield f"data: {json.dumps({'type': 'text', 'content': '❌ 错误: ' + event.data['message']})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        # Fallback: 轮询（旧客户端兼容）
         while True:
             await asyncio.sleep(0.1)
             async with _tasks_lock:
@@ -319,7 +351,6 @@ async def chat_stream(task_id: str, offset: int = Query(0, ge=0)):
                 yield f"data: {json.dumps({'type': 'text', 'content': new_part})}\n\n"
 
             if task.done:
-                # 推送 sources（如果有）
                 if task.sources_json and not sources_sent:
                     sources_sent = True
                     yield f"data: {json.dumps({'type': 'sources', 'data': json.loads(task.sources_json)})}\n\n"

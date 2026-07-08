@@ -30,6 +30,7 @@ from ..core.config import AGENT_MAX_ROUNDS, PAPERS_DIR, JOURNALS_PDF_DIR, LLM_BA
 from ..core.schemas import AgentEvent, ToolCall, ToolResult
 from ..core.llm import chat_completion_stream, chat_completion_with_tools
 from .retrieval import search_papers
+from .gaussian_service import submit_job, check_job
 
 # ── 工具定义 ──
 
@@ -56,6 +57,47 @@ TOOLS = [
         ),
         "parameters": {
             "source": "Paper source filename from search results (e.g., 'Nature_2021_xxx.pdf')",
+        },
+    },
+    {
+        "name": "run_gaussian",
+        "description": (
+            "Submit a DFT calculation using Gaussian 16 on the local cluster "
+            "(384 cores, 377GB RAM). Supports geometry optimization, single point "
+            "energy, dipole moment, frequency analysis. Use for computing molecular "
+            "properties of SAM molecules, perovskite fragments, or interface models."
+        ),
+        "parameters": {
+            "molecule_name": "Short identifier (e.g., 'MeO-2PACz')",
+            "charge": "Net charge (integer, e.g., 0 for neutral)",
+            "multiplicity": "Spin multiplicity (1=singlet, 2=doublet, 3=triplet)",
+            "coordinates": "XYZ format coordinates (element symbols + x y z per line)",
+            "method": "DFT functional (default: B3LYP, options: PBE0, M06-2X, wB97XD)",
+            "basis": "Basis set (default: 6-31G(d), options: 6-31+G(d,p), def2SVP, LANL2DZ)",
+            "job_type": "Calculation type (default: 'opt freq', options: 'sp' for single point)",
+        },
+    },
+    {
+        "name": "check_gaussian",
+        "description": (
+            "Check the status of a submitted Gaussian calculation. Returns whether "
+            "the job is running, done, or failed, along with extracted results "
+            "(energy in Hartree, dipole moment in Debye) if available."
+        ),
+        "parameters": {
+            "job_id": "The job ID returned by run_gaussian",
+        },
+    },
+    {
+        "name": "extract_data",
+        "description": (
+            "Extract structured performance data from a perovskite solar cell paper. "
+            "Returns key metrics: PCE (power conversion efficiency), Voc, Jsc, FF, "
+            "device architecture (n-i-p or p-i-n), perovskite composition, "
+            "and stability test results if available."
+        ),
+        "parameters": {
+            "source": "Paper source filename (e.g., 'Nature_2021_xxx.pdf')",
         },
     },
 ]
@@ -109,6 +151,18 @@ AGENT_SYSTEM_PROMPT = """你是 Sunny，钙钛矿太阳能电池领域的 AI 研
 
 <tool_call>
 {"name": "read_paper", "arguments": {"source": "论文文件名.pdf"}}
+</tool_call>
+
+<tool_call>
+{"name": "run_gaussian", "arguments": {"molecule_name": "MeO-2PACz", "charge": 0, "multiplicity": 1, "coordinates": "C 0.0 0.0 0.0\\n..."}}
+</tool_call>
+
+<tool_call>
+{"name": "check_gaussian", "arguments": {"job_id": "job_id_from_run_gaussian"}}
+</tool_call>
+
+<tool_call>
+{"name": "extract_data", "arguments": {"source": "论文文件名.pdf"}}
 </tool_call>
 
 规则：
@@ -318,9 +372,105 @@ def execute_read_tool(arguments: dict) -> tuple:
 # ── Skill 注册表 ──
 # 添加新 skill: TOOL_EXECUTORS["name"] = executor_function
 # 每个 executor 返回 (ToolResult, raw_data) 元组
+def execute_gaussian_tool(arguments: dict) -> tuple:
+    """执行 run_gaussian 工具。"""
+    try:
+        result = submit_job(
+            molecule_name=arguments.get("molecule_name", "molecule"),
+            charge=int(arguments.get("charge", 0)),
+            multiplicity=int(arguments.get("multiplicity", 1)),
+            coordinates=arguments.get("coordinates", ""),
+            method=arguments.get("method", "B3LYP"),
+            basis=arguments.get("basis", "6-31G(d)"),
+            job_type=arguments.get("job_type", "opt freq"),
+        )
+        output = (
+            f"Gaussian job submitted.\n"
+            f"  Job ID: {result['job_id']}\n"
+            f"  Molecule: {result['molecule']}\n"
+            f"  Method: {result['method']}/{result['basis']}\n"
+            f"  Type: {result['job_type']}\n"
+            f"Use check_gaussian with this job_id to check status and get results."
+        )
+        return (ToolResult(ToolCall("run_gaussian", arguments), output), None)
+    except Exception as e:
+        return (ToolResult(ToolCall("run_gaussian", arguments), "", error=str(e)), None)
+
+
+def execute_check_gaussian_tool(arguments: dict) -> tuple:
+    """执行 check_gaussian 工具。"""
+    job_id = arguments.get("job_id", "")
+    if not job_id:
+        return (ToolResult(ToolCall("check_gaussian", arguments), "", error="job_id is required"), None)
+
+    result = check_job(job_id)
+    lines = [f"Job {job_id}: {result['status']}"]
+    if result.get("energy_hartree"):
+        lines.append(f"  Energy: {result['energy_hartree']:.6f} Hartree")
+    if result.get("dipole_debye") is not None:
+        lines.append(f"  Dipole: {result['dipole_debye']:.4f} Debye")
+    if result.get("wall_time"):
+        lines.append(f"  Time: {result['wall_time']}")
+    if result.get("error"):
+        lines.append(f"  Error: {result['error']}")
+
+    return (ToolResult(ToolCall("check_gaussian", arguments), "\n".join(lines)), None)
+
+
+def execute_extract_data_tool(arguments: dict) -> tuple:
+    """执行 extract_data 工具——从论文中提取结构化数据。"""
+    source = arguments.get("source", "")
+    if not source:
+        return (ToolResult(ToolCall("extract_data", arguments), "", error="source is required"), None)
+
+    pdf_path = find_pdf_path(source)
+    if not pdf_path:
+        return (ToolResult(ToolCall("extract_data", arguments), f"PDF not found: {source}", error="PDF not found"), None)
+
+    try:
+        proc = subprocess.run(
+            ["pdftotext", pdf_path, "-"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            return (ToolResult(ToolCall("extract_data", arguments), "", error=f"pdftotext error: {proc.stderr[:200]}"), None)
+        text = proc.stdout[:10000]
+
+        # 用 LLM 提取结构化数据
+        import requests
+        from ..core.config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+
+        resp = requests.post(
+            f"{DEEPSEEK_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": DEEPSEEK_MODEL,
+                "messages": [
+                    {"role": "system", "content": (
+                        "Extract perovskite solar cell performance data from this paper excerpt. "
+                        "Return ONLY a JSON object with these fields (use null if not found): "
+                        "pce (max power conversion efficiency %), voc (V), jsc (mA/cm²), ff (%), "
+                        "device_structure (n-i-p or p-i-n), perovskite_composition, "
+                        "stability (hours tested, conditions), key_innovation (one sentence summary)."
+                    )},
+                    {"role": "user", "content": text},
+                ],
+                "temperature": 0.1, "max_tokens": 512,
+            },
+            timeout=30,
+        )
+        content = resp.json()["choices"][0]["message"]["content"]
+        return (ToolResult(ToolCall("extract_data", arguments), content), {"source": source, "content": content[:600]})
+    except Exception as e:
+        return (ToolResult(ToolCall("extract_data", arguments), "", error=str(e)), {})
+
+
 TOOL_EXECUTORS: dict[str, Callable[[dict], tuple]] = {
     "search_papers": execute_search_tool,
     "read_paper": execute_read_tool,
+    "run_gaussian": execute_gaussian_tool,
+    "check_gaussian": execute_check_gaussian_tool,
+    "extract_data": execute_extract_data_tool,
 }
 
 
