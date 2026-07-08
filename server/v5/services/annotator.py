@@ -196,6 +196,7 @@ def extract_highlight_meta(pdf_path: str, chunk_texts: list) -> dict:
         top_paras = [(pg, bbox) for _, pg, bbox in para_scores[:3] if _ > 0.06]
 
         chunk_pages: set[int] = set()
+        _matched_rects: list[dict] = []  # [{page, bbox}, ...]
         for pg, para_bbox in top_paras:
             px0, py0, px1, py1 = para_bbox
             py0 -= 2
@@ -212,6 +213,11 @@ def extract_highlight_meta(pdf_path: str, chunk_texts: list) -> dict:
                     continue
                 chunk_pages.add(pg + 1)
                 all_pages.add(pg + 1)
+                # 用段落 x + 行 y 作为高亮区域
+                _matched_rects.append({
+                    "page": pg + 1,
+                    "bbox": [float(px0), float(ly0), float(px1), float(ly1)],
+                })
 
         if chunk_pages:
             chunk_meta.append({
@@ -219,6 +225,7 @@ def extract_highlight_meta(pdf_path: str, chunk_texts: list) -> dict:
                 "pages": sorted(chunk_pages),
                 "text_preview": _normalize(chunk)[:120],
                 "text": _normalize(chunk),
+                "rects": _matched_rects,  # 匹配行的 bbox 坐标列表
             })
 
     meta = {"pages": sorted(all_pages), "chunks": chunk_meta}

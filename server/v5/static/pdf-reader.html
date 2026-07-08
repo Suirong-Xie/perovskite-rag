@@ -338,45 +338,36 @@ async function renderHighlights() {
 
   for(const chunk of data.chunks) {
     const colorIdx = chunk.idx % 6;
-    const pages = chunk.pages || [];
+    const rects = chunk.rects || [];
 
-    for(const pn of pages) {
+    for(const r of rects) {
+      const pn = r.page;
       if(pn < 1 || pn > totalPages) continue;
+      const [px0, py0, px1, py1] = r.bbox;
+
+      // PDF 坐标 (points) → viewport 坐标 (pixels at currentScale)
       const page = await pdfDoc.getPage(pn);
-      const textContent = await page.getTextContent();
       const vp = page.getViewport({scale: currentScale});
-      const items = textContent.items.filter(it => it.str && it.str.trim().length > 1);
+      const [vx0, vy0] = vp.convertToViewportPoint(px0, py0);
+      const [vx1, vy1] = vp.convertToViewportPoint(px1, py1);
 
-      // Search for chunk text in page
-      const queries = makeQueries(chunk.text || chunk.text_preview || '');
-      for(const q of queries) {
-        const matchItems = findInTextContent(items, q);
-        if(!matchItems.length) continue;
+      const overlay = document.querySelector('.hl-overlay[data-page="'+pn+'"]');
+      if(!overlay) continue;
+      const wrap = overlay.parentElement;
+      const wrapW = parseFloat(wrap.style.width);
+      const wrapH = parseFloat(wrap.style.height);
 
-        // Bounding box of matched items
-        const x0 = Math.min(...matchItems.map(t => vp.convertToViewportPoint(t.transform[4], t.transform[5])[0]));
-        const y0 = Math.min(...matchItems.map(t => vp.convertToViewportPoint(t.transform[4], t.transform[5])[1]));
-        const x1 = Math.max(...matchItems.map(t => vp.convertToViewportPoint(t.transform[4] + t.width, t.transform[5] + t.height)[0]));
-        const y1 = Math.max(...matchItems.map(t => vp.convertToViewportPoint(t.transform[4] + t.width, t.transform[5] + t.height)[1]));
-
-        const overlay = document.querySelector('.hl-overlay[data-page="'+pn+'"]');
-        if(!overlay) continue;
-        const wrap = overlay.parentElement;
-        const wrapW = parseFloat(wrap.style.width);
-        const wrapH = parseFloat(wrap.style.height);
-
-        const rect = document.createElement('div');
-        rect.className = 'hl-rect';
-        rect.setAttribute('data-color', String(colorIdx));
-        rect.setAttribute('data-page', String(pn));
-        rect.style.cssText = [
-          'left:'+(x0/wrapW*100).toFixed(2)+'%',
-          'top:'+(y0/wrapH*100).toFixed(2)+'%',
-          'width:'+((x1-x0)/wrapW*100).toFixed(2)+'%',
-          'height:'+((y1-y0)/wrapH*100).toFixed(2)+'%',
-        ].join(';');
-        overlay.appendChild(rect);
-      }
+      const rect = document.createElement('div');
+      rect.className = 'hl-rect';
+      rect.setAttribute('data-color', String(colorIdx));
+      rect.setAttribute('data-page', String(pn));
+      rect.style.cssText = [
+        'left:'+(vx0/wrapW*100).toFixed(2)+'%',
+        'top:'+(vy0/wrapH*100).toFixed(2)+'%',
+        'width:'+((vx1-vx0)/wrapW*100).toFixed(2)+'%',
+        'height:'+((vy1-vy0)/wrapH*100).toFixed(2)+'%',
+      ].join(';');
+      overlay.appendChild(rect);
     }
   }
 }
