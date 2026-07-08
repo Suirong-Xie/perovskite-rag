@@ -401,14 +401,17 @@ function finishGeneration(){
 }
 
 // PDF reader 事件（来自 iframe 的 postMessage）
-window.addEventListener('pdf-ask-followup', function(e){
-  const text = e.detail?.text || '';
-  if(!text) return;
-  const inp = document.getElementById('inputBox');
-  inp.value = '关于 "'+text.slice(0,80)+'" 请进一步解释：';
-  inp.focus();
+window.addEventListener('message', function(e){
+  const msg = e.data;
+  if(!msg || !msg.type) return;
+  if(msg.type === 'pdf-ask-followup') {
+    const inp = document.getElementById('inputBox');
+    inp.value = '关于 "'+(msg.text||'').slice(0,80)+'" 请进一步解释：';
+    inp.focus();
+  } else if(msg.type === 'pdf-close') {
+    closePdfPanel();
+  }
 });
-window.addEventListener('pdf-close', function(){ closePdfPanel(); });
 
 (async function init(){
   try {
@@ -806,20 +809,21 @@ async function openPdf(src, page){
   document.getElementById('pdfPanel').classList.add('on');
   const frame = document.getElementById('pdfFrame');
 
-  async function _load(){
-    const w = frame.contentWindow;
-    await w.PDFReader.open(f, pdfUrl(f));
-    // 发送高亮数据
-    if(_pdfHighlights[f]) w.PDFReader.setHighlights(f, _pdfHighlights[f]);
-    // 跳转到指定页
-    if(page > 0) w.PDFReader.goToPage(page);
+  function _send(){
+    frame.contentWindow.postMessage({
+      type: 'pdf-open',
+      fid: f,
+      url: pdfUrl(f),
+      page: page || 0,
+      highlights: _pdfHighlights[f] || null,
+    }, '*');
   }
 
   if(frame.contentWindow && frame.contentWindow.PDFReader) {
-    _load(); return;
+    _send(); return;
   }
   frame.src = '/static/pdf-reader.html';
-  frame.onload = _load;
+  frame.onload = _send;
 }
 
 function openPdfPage(fid, page){

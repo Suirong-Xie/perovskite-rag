@@ -260,6 +260,17 @@ let highlightData = {}; // {fid: {pages:[], chunks:[{pages:[], text:"", idx:0}]}
 let currentFid = null;
 
 // ── API (called from parent) ──
+// ── 监听父页面的 postMessage ──
+window.addEventListener('message', async function(e) {
+  const msg = e.data;
+  if(!msg || !msg.type) return;
+  if(msg.type === 'pdf-open') {
+    await PDFReader.open(msg.fid, msg.url);
+    if(msg.highlights) PDFReader.setHighlights(msg.fid, msg.highlights);
+    if(msg.page > 0) PDFReader.goToPage(msg.page);
+  }
+});
+
 window.PDFReader = {
   open: async function(fid, pdfUrl) {
     currentFid = fid;
@@ -397,26 +408,6 @@ async function renderHighlights() {
       }
     }
   }
-  // ── 诊断：写死一个测试矩形 ──
-  if(totalRects === 0 && totalPages > 0) {
-    // 在第一页画一个明显的红色测试矩形
-    const testOverlay = document.querySelector('.hl-overlay[data-page="1"]');
-    if(testOverlay) {
-      const testRect = document.createElement('div');
-      testRect.className = 'hl-rect';
-      testRect.setAttribute('data-color', '3'); // rose color
-      testRect.style.cssText = 'left:10%;top:10%;width:80%;height:30%;background:rgba(255,0,0,0.25);border-radius:4px;';
-      testRect.textContent = 'TEST';
-      testRect.style.color = 'red';
-      testRect.style.fontSize = '40px';
-      testRect.style.fontWeight = 'bold';
-      testRect.style.display = 'flex';
-      testRect.style.alignItems = 'center';
-      testRect.style.justifyContent = 'center';
-      testOverlay.appendChild(testRect);
-    }
-  }
-
   if(badge) {
     const parts = [totalRects+'✓'];
     if(stats.noOverlay) parts.push(stats.noOverlay+'!overlay');
@@ -506,8 +497,7 @@ function hideSelToolbar() {
 
 function askFollowUp() {
   if(!selText) return;
-  // Dispatch event for parent to handle
-  window.dispatchEvent(new CustomEvent('pdf-ask-followup', {detail: {text: selText, fid: currentFid}}));
+  window.parent.postMessage({type:'pdf-ask-followup', text: selText, fid: currentFid}, '*');
   hideSelToolbar();
   window.getSelection().removeAllRanges();
 }
@@ -519,7 +509,7 @@ function copySelection() {
 }
 
 function closeReader() {
-  window.dispatchEvent(new CustomEvent('pdf-close'));
+  window.parent.postMessage({type:'pdf-close'}, '*');
   PDFReader.close();
 }
 
