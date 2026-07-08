@@ -206,8 +206,8 @@ async def run_chat_pipeline(task_id: str, sid: str, req: ChatRequest):
     search_hint = await translate_to_english(req.message)
     log(f"TASK {task_id} TRANSLATE: '{req.message[:50]}' → '{search_hint[:80]}'")
 
-    # 2. 系统预搜索：用确定性代码检索，结果存入 TaskInfo.sources（系统链路）
-    initial_results = search_papers(search_hint, top_k=5)
+    # 2. 系统预搜索：查询扩展 + BM25 混合检索，结果存入 TaskInfo.sources
+    initial_results = search_papers(search_hint, top_k=5, expand=True, hybrid=True)
     if initial_results:
         async with _tasks_lock:
             if task_id in _tasks:
