@@ -792,18 +792,27 @@ const _pdfHighlights = {};
 
 function setPdfHighlights(fid, data){ _pdfHighlights[fid] = data }
 
-function openPdf(src){
+async function openPdf(src){
   const f = fid(src);
   document.getElementById('pdfPanel').classList.add('on');
   const frame = document.getElementById('pdfFrame');
-  frame.src = '/static/pdf-reader.html';
-  frame.onload = async function(){
+
+  async function _loadPdf(){
     await frame.contentWindow.PDFReader.open(f, pdfUrl(f));
-    // open 完成后（所有页面已渲染）再设高亮数据
     if(_pdfHighlights[f]) {
       frame.contentWindow.PDFReader.setHighlights(f, _pdfHighlights[f]);
     }
-  };
+  }
+
+  // 如果 reader 已经加载，直接调 API（避免 URL 不变时 onload 不触发）
+  if(frame.contentWindow && frame.contentWindow.PDFReader) {
+    _loadPdf();
+    return;
+  }
+
+  // 首次加载
+  frame.src = '/static/pdf-reader.html';
+  frame.onload = _loadPdf;
 }
 
 function openPdfPage(fid, page){
