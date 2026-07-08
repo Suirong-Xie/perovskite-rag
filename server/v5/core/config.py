@@ -49,4 +49,4 @@ SEARCH_DATA_VERSION = os.getenv("SEARCH_DATA_VERSION", "v3")
 SEARCH_DEFAULT_TOP_K = int(os.getenv("SEARCH_DEFAULT_TOP_K", "5"))
 
 # ── Agent 配置 ──
-AGENT_MAX_ROUNDS = int(os.getenv("AGENT_MAX_ROUNDS", "5"))
+AGENT_MAX_ROUNDS = int(os.getenv("AGENT_MAX_ROUNDS", "7"))
