@@ -239,6 +239,7 @@ html, body {
       <span class="zoom-label" id="zoomLabel">140%</span>
       <button onclick="zoomOut()">−</button>
     </div>
+    <span id="hlBadge" style="font-size:.68rem;color:var(--accent);opacity:0;transition:opacity .3s;font-family:var(--font-mono)"></span>
     <button class="close-btn" onclick="closeReader()">×</button>
   </div>
   <div id="pages"></div>
@@ -272,14 +273,16 @@ window.PDFReader = {
       currentPage = 1;
       await renderAllPages();
       updateNav();
+      // 渲染完成后，尝试用已缓存的高亮数据
+      if(highlightData[currentFid]) await renderHighlights();
     } catch(e) {
       document.getElementById('pages').innerHTML = '<div class="empty-state"><div class="icon">⚠</div><p>加载失败: '+e.message+'</p></div>';
     }
   },
 
-  setHighlights: function(fid, data) {
+  setHighlights: async function(fid, data) {
     highlightData[fid] = data;
-    if(fid === currentFid) renderHighlights();
+    if(fid === currentFid && pdfDoc) await renderHighlights();
   },
 
   goToPage: function(page) {
@@ -331,49 +334,71 @@ async function renderAllPages() {
     container.appendChild(wrap);
   }
 
-  if(highlightData[currentFid]) renderHighlights();
 }
 
 async function renderHighlights() {
   const data = highlightData[currentFid];
-  if(!data || !data.chunks) return;
+  const badge = document.getElementById('hlBadge');
+  if(!data || !data.chunks) { if(badge) badge.style.opacity = '0'; return; }
 
   // Clear old
   document.querySelectorAll('.hl-rect').forEach(e => e.remove());
+
+  let totalRects = 0;
+
+  // 缓存已加载的 page viewport（避免重复 getPage）
+  const pageVpCache = {};
 
   for(const chunk of data.chunks) {
     const colorIdx = chunk.idx % 6;
     const rects = chunk.rects || [];
 
     for(const r of rects) {
-      const pn = r.page;
-      if(pn < 1 || pn > totalPages) continue;
-      const [px0, py0, px1, py1] = r.bbox;
+      try {
+        const pn = r.page;
+        if(pn < 1 || pn > totalPages) continue;
 
-      // PDF 坐标 (points) → viewport 坐标 (pixels at currentScale)
-      const page = await pdfDoc.getPage(pn);
-      const vp = page.getViewport({scale: currentScale});
-      const [vx0, vy0] = vp.convertToViewportPoint(px0, py0);
-      const [vx1, vy1] = vp.convertToViewportPoint(px1, py1);
+        // 缓存 viewport
+        if(!pageVpCache[pn]) {
+          const pg = await pdfDoc.getPage(pn);
+          pageVpCache[pn] = pg.getViewport({scale: currentScale});
+        }
+        const vp = pageVpCache[pn];
 
-      const overlay = document.querySelector('.hl-overlay[data-page="'+pn+'"]');
-      if(!overlay) continue;
-      const wrap = overlay.parentElement;
-      const wrapW = parseFloat(wrap.style.width);
-      const wrapH = parseFloat(wrap.style.height);
+        const [px0, py0, px1, py1] = r.bbox;
+        const [vx0, vy0] = vp.convertToViewportPoint(px0, py0);
+        const [vx1, vy1] = vp.convertToViewportPoint(px1, py1);
 
-      const rect = document.createElement('div');
-      rect.className = 'hl-rect';
-      rect.setAttribute('data-color', String(colorIdx));
-      rect.setAttribute('data-page', String(pn));
-      rect.style.cssText = [
-        'left:'+(vx0/wrapW*100).toFixed(2)+'%',
-        'top:'+(vy0/wrapH*100).toFixed(2)+'%',
-        'width:'+((vx1-vx0)/wrapW*100).toFixed(2)+'%',
-        'height:'+((vy1-vy0)/wrapH*100).toFixed(2)+'%',
-      ].join(';');
-      overlay.appendChild(rect);
+        const overlay = document.querySelector('.hl-overlay[data-page="'+pn+'"]');
+        if(!overlay) continue;
+        const wrap = overlay.parentElement;
+        const wrapW = parseFloat(wrap.style.width);
+        const wrapH = parseFloat(wrap.style.height);
+
+        const w = (vx1-vx0)/wrapW*100;
+        const h = (vy1-vy0)/wrapH*100;
+        if(w < 0.5 || h < 0.2) continue;  // skip tiny rects
+
+        const rect = document.createElement('div');
+        rect.className = 'hl-rect';
+        rect.setAttribute('data-color', String(colorIdx));
+        rect.setAttribute('data-page', String(pn));
+        rect.style.cssText = [
+          'left:'+(vx0/wrapW*100).toFixed(2)+'%',
+          'top:'+(vy0/wrapH*100).toFixed(2)+'%',
+          'width:'+w.toFixed(2)+'%',
+          'height:'+h.toFixed(2)+'%',
+        ].join(';');
+        overlay.appendChild(rect);
+        totalRects++;
+      } catch(e) {
+        console.warn('highlight rect error:', e);
+      }
     }
+  }
+  if(badge) {
+    badge.textContent = totalRects + ' marks';
+    badge.style.opacity = '1';
   }
 }
 
