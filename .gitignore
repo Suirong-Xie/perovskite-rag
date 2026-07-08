@@ -28,12 +28,14 @@ logs/
 *.log
 
 # ── Sessions (runtime data) ──
-server/v4/sessions/
+server/**/sessions/
 server/v4/sessions.json
 server/v4/sessions.json.bak
+server/v5/sessions.json
 
 # ── Annotated PDFs (generated) ──
 server/v4/annotated_pdfs/
+server/v5/annotated_pdfs/
 
 # ── Python Cache ──
 __pycache__/
@@ -74,3 +76,22 @@ data/chrome_profile/
 
 # ── Pipeline state ──
 data/pipeline/
+
+# ── Data Artifacts (intermediate) ──
+data/extracted_texts/
+data/chunked_v3/
+data/chunked_v4/
+data/chunked_v5/
+
+# ── Node modules ──
+node_modules/
+deps/node_modules/
+
+# ── Claude local config ──
+.claude/
+
+# ── Milvus / Vector DB runtime data ──
+data/milvus_data/
+
+# ── Legacy session data ──
+data/perovskite_sessions/

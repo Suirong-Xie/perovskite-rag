@@ -724,9 +724,18 @@ function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').rep
 function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;') }
 function md(t){
   if(typeof marked==='undefined') return '<p>'+esc(t)+'</p>';
-  try { return marked.parse(t.replace(/\[📄\]\(([^\s)]+)\)/g,'<a href="$1">📄</a>')); }
+  try { return marked.parse(t.replace(/\[📄\]\(([^\s)]+)\)/g,'<a href="$1" class="pdf-link" data-fid="$1">📄</a>')); }
   catch(e){ return '<p>'+esc(t)+'</p>'; }
 }
+
+// 拦截回答中的 PDF 链接点击，改为打开 pdf-reader 面板
+document.addEventListener('click', function(e){
+  const link = e.target.closest('a.pdf-link');
+  if(!link) return;
+  e.preventDefault();
+  const fid = link.getAttribute('data-fid') || link.getAttribute('href').replace('/api/pdf/','');
+  openPdf(fid);
+});
 
 /* Sources panel */
 // ── 高亮配色（与 annotator.py CHUNK_COLORS 对应） ──
@@ -792,31 +801,29 @@ const _pdfHighlights = {};
 
 function setPdfHighlights(fid, data){ _pdfHighlights[fid] = data }
 
-async function openPdf(src){
+async function openPdf(src, page){
   const f = fid(src);
   document.getElementById('pdfPanel').classList.add('on');
   const frame = document.getElementById('pdfFrame');
 
-  async function _loadPdf(){
-    await frame.contentWindow.PDFReader.open(f, pdfUrl(f));
-    if(_pdfHighlights[f]) {
-      frame.contentWindow.PDFReader.setHighlights(f, _pdfHighlights[f]);
-    }
+  async function _load(){
+    const w = frame.contentWindow;
+    await w.PDFReader.open(f, pdfUrl(f));
+    // 发送高亮数据
+    if(_pdfHighlights[f]) w.PDFReader.setHighlights(f, _pdfHighlights[f]);
+    // 跳转到指定页
+    if(page > 0) w.PDFReader.goToPage(page);
   }
 
-  // 如果 reader 已经加载，直接调 API（避免 URL 不变时 onload 不触发）
   if(frame.contentWindow && frame.contentWindow.PDFReader) {
-    _loadPdf();
-    return;
+    _load(); return;
   }
-
-  // 首次加载
   frame.src = '/static/pdf-reader.html';
-  frame.onload = _loadPdf;
+  frame.onload = _load;
 }
 
 function openPdfPage(fid, page){
-  openPdf(fid);
+  openPdf(fid, page);
 }
 
 function closePdfPanel(){

@@ -282,6 +282,11 @@ window.PDFReader = {
     if(fid === currentFid) renderHighlights();
   },
 
+  goToPage: function(page) {
+    const wrap = document.querySelector('.page-wrap[data-page="'+page+'"]');
+    if(wrap) { wrap.scrollIntoView({behavior:'smooth', block:'start'}); currentPage = page; updateNav(); }
+  },
+
   close: function() {
     pdfDoc = null; currentFid = null; totalPages = 0;
     document.getElementById('pages').innerHTML = '';
@@ -370,50 +375,6 @@ async function renderHighlights() {
       overlay.appendChild(rect);
     }
   }
-}
-
-function makeQueries(text) {
-  text = (text || '').replace(/[#*_]/g, '').replace(/\s+/g, ' ').trim();
-  const qs = [];
-  if(text.length >= 25) qs.push(text.slice(0, 250));
-  for(const s of text.split(/[.!?]/)) {
-    const t = s.trim();
-    if(t.length >= 20 && t.length <= 180) qs.push(t);
-  }
-  return qs.slice(0, 5);
-}
-
-function findInTextContent(items, query) {
-  if(!items.length || !query) return [];
-
-  // 词级匹配：容忍词序变化和部分匹配
-  const qWords = query.toLowerCase().replace(/[^\w\s-]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
-  if(qWords.length < 2) return [];
-
-  // 在 PDF items 中滑动匹配，找到最佳匹配区域
-  let bestStart = -1, bestScore = 0, bestLen = 0;
-  const windowLen = Math.min(qWords.length + 5, items.length);
-
-  for(let i = 0; i <= items.length - 3; i++) {
-    let score = 0;
-    const end = Math.min(i + windowLen, items.length);
-    for(let j = i; j < end; j++) {
-      const itemWord = (items[j].str || '').toLowerCase().replace(/[^\w\s-]/g, '').trim();
-      if(!itemWord || itemWord.length < 2) continue;
-      for(const qw of qWords) {
-        if(itemWord === qw) { score += 1; break; }
-      }
-    }
-    if(score > bestScore) {
-      bestScore = score;
-      bestStart = i;
-      bestLen = end - i;
-    }
-  }
-
-  // 需要至少匹配 25% 的查询词
-  if(bestScore < Math.max(2, qWords.length * 0.25)) return [];
-  return items.slice(bestStart, bestStart + bestLen);
 }
 
 // ── Navigation ──
