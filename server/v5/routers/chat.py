@@ -14,7 +14,7 @@ from ..core.schemas import ChatRequest, TaskInfo
 from ..core.config import AGENT_MAX_ROUNDS
 from ..services.session_store import store
 from ..services.translator import translate_to_english
-from ..services.annotator import annotate_pdf
+from ..services.annotator import extract_highlight_meta
 from ..services.agent import run_agent_loop, find_pdf_fast
 
 router = APIRouter()
@@ -125,16 +125,16 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
             async with _tasks_lock:
                 _tasks[task_id].pdfs_validated.add(file_id)
 
-            # PDF 高亮标注：使用搜索结果的原始 chunk content
+            # PDF 高亮元数据提取（不修改 PDF，只出 metadata 给前端 CSS overlay）
             content_preview = (s.get("content", "") or "")[:200].replace("\n", " ").strip()
             highlight_meta = {}
             chunk_text = s.get("content", "")[:2000]
             if chunk_text:
                 try:
-                    pdf_out, highlight_meta = annotate_pdf(pdf_path_str, [chunk_text])
-                    if pdf_out:
+                    highlight_meta = extract_highlight_meta(pdf_path_str, [chunk_text])
+                    if highlight_meta.get("chunks"):
                         annot_count += 1
-                        log(f"TASK {task_id} ANNOTATE: {file_id} → highlighted")
+                        log(f"TASK {task_id} ANNOTATE: {file_id} → meta extracted")
                 except Exception as e:
                     log(f"TASK {task_id} ANNOTATE error for {file_id}: {e}")
 
