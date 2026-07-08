@@ -346,19 +346,20 @@ async function renderHighlights() {
 
   let totalRects = 0;
 
-  // 缓存已加载的 page viewport（避免重复 getPage）
+  // 缓存已加载的 page viewport
   const pageVpCache = {};
+  let stats = {noOverlay:0, badPage:0, tooSmall:0, errors:0, total:0};
 
   for(const chunk of data.chunks) {
     const colorIdx = chunk.idx % 6;
     const rects = chunk.rects || [];
+    stats.total += rects.length;
 
     for(const r of rects) {
       try {
         const pn = r.page;
-        if(pn < 1 || pn > totalPages) continue;
+        if(pn < 1 || pn > totalPages) { stats.badPage++; continue; }
 
-        // 缓存 viewport
         if(!pageVpCache[pn]) {
           const pg = await pdfDoc.getPage(pn);
           pageVpCache[pn] = pg.getViewport({scale: currentScale});
@@ -370,14 +371,14 @@ async function renderHighlights() {
         const [vx1, vy1] = vp.convertToViewportPoint(px1, py1);
 
         const overlay = document.querySelector('.hl-overlay[data-page="'+pn+'"]');
-        if(!overlay) continue;
+        if(!overlay) { stats.noOverlay++; continue; }
         const wrap = overlay.parentElement;
         const wrapW = parseFloat(wrap.style.width);
         const wrapH = parseFloat(wrap.style.height);
 
         const w = (vx1-vx0)/wrapW*100;
         const h = (vy1-vy0)/wrapH*100;
-        if(w < 0.5 || h < 0.2) continue;  // skip tiny rects
+        if(w < 0.5 || h < 0.2) { stats.tooSmall++; continue; }
 
         const rect = document.createElement('div');
         rect.className = 'hl-rect';
@@ -392,12 +393,38 @@ async function renderHighlights() {
         overlay.appendChild(rect);
         totalRects++;
       } catch(e) {
-        console.warn('highlight rect error:', e);
+        stats.errors++;
       }
     }
   }
+  // ── 诊断：写死一个测试矩形 ──
+  if(totalRects === 0 && totalPages > 0) {
+    // 在第一页画一个明显的红色测试矩形
+    const testOverlay = document.querySelector('.hl-overlay[data-page="1"]');
+    if(testOverlay) {
+      const testRect = document.createElement('div');
+      testRect.className = 'hl-rect';
+      testRect.setAttribute('data-color', '3'); // rose color
+      testRect.style.cssText = 'left:10%;top:10%;width:80%;height:30%;background:rgba(255,0,0,0.25);border-radius:4px;';
+      testRect.textContent = 'TEST';
+      testRect.style.color = 'red';
+      testRect.style.fontSize = '40px';
+      testRect.style.fontWeight = 'bold';
+      testRect.style.display = 'flex';
+      testRect.style.alignItems = 'center';
+      testRect.style.justifyContent = 'center';
+      testOverlay.appendChild(testRect);
+    }
+  }
+
   if(badge) {
-    badge.textContent = totalRects + ' marks';
+    const parts = [totalRects+'✓'];
+    if(stats.noOverlay) parts.push(stats.noOverlay+'!overlay');
+    if(stats.badPage) parts.push(stats.badPage+'!page');
+    if(stats.tooSmall) parts.push(stats.tooSmall+'!size');
+    if(stats.errors) parts.push(stats.errors+'!err');
+    if(stats.total) parts.push('in:'+stats.total);
+    badge.textContent = parts.join(' ');
     badge.style.opacity = '1';
   }
 }
