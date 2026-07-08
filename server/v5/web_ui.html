@@ -717,6 +717,7 @@ function add(role, content){
 }
 function scrollDown(){ const c=document.getElementById('messages'); c.scrollTop=c.scrollHeight }
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;') }
 function md(t){
   if(typeof marked==='undefined') return '<p>'+esc(t)+'</p>';
   try { return marked.parse(t.replace(/\[📄\]\(([^\s)]+)\)/g,'<a href="$1">📄</a>')); }
