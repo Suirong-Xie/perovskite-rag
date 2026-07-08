@@ -342,16 +342,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 </main>
 
 <div class="pdf-panel" id="pdfPanel">
-  <div class="pdf-bar">
-    <span id="pdfPanelTitle"></span>
-    <span style="display:flex;gap:4px;align-items:center">
-      <button onclick="pdfZoom(-0.2)" title="缩小">−</button>
-      <span id="pdfZoomLabel" style="font-size:.72rem;min-width:36px;text-align:center">160%</span>
-      <button onclick="pdfZoom(+0.2)" title="放大">+</button>
-      <button onclick="closePdfPanel()" style="margin-left:8px">×</button>
-    </span>
-  </div>
-  <div class="pdf-pages" id="pdfPages"></div>
+  <iframe id="pdfFrame" src="" style="width:100%;height:100%;border:none;background:var(--bg)"></iframe>
 </div>
 
 <div class="modal-overlay" id="libOverlay" onclick="if(event.target===this)closeLibrary()">
@@ -385,12 +376,9 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <script>
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
-// fallback: 如果 CDN 加载失败（国内网络问题），marked 和 pdfjsLib 可能为 undefined
+// fallback: 如果 CDN 加载失败（国内网络问题），marked 可能为 undefined
 if(typeof marked === 'undefined'){ console.warn('[init] marked.js not loaded, using plain text'); }
-if(typeof pdfjsLib === 'undefined'){ console.warn('[init] pdf.js not loaded, PDF viewer will fallback to iframe'); }
 
 /* ═══════════════════════════════════════════════
    Application Logic
@@ -411,6 +399,16 @@ function finishGeneration(){
   setGenerating(false);
   renderSessions();
 }
+
+// PDF reader 事件（来自 iframe 的 postMessage）
+window.addEventListener('pdf-ask-followup', function(e){
+  const text = e.detail?.text || '';
+  if(!text) return;
+  const inp = document.getElementById('inputBox');
+  inp.value = '关于 "'+text.slice(0,80)+'" 请进一步解释：';
+  inp.focus();
+});
+window.addEventListener('pdf-close', function(){ closePdfPanel(); });
 
 (async function init(){
   try {
@@ -780,228 +778,37 @@ function renderSourcesBox(el, sources){
 }
 
 /* ═══════════════════════════════════════════════
-   PDF Viewer (pdf.js + CSS highlight overlay)
+   PDF Viewer (iframe → pdf-reader.html)
    ═══════════════════════════════════════════════ */
 function pdfUrl(fid){ return '/api/pdf/'+fid }
 function fid(src){ return String(src).replace(/\.pdf$/,'') }
 
-let _pdfDoc = null, _pdfFid = null, _pdfScale = 1.6;
-const _pdfHighlights = {}; // fid → [{pages: [], chunks: [...]}]
+const _pdfHighlights = {};
 
-// 存储 highlight 元数据（从 sources 事件收集）
 function setPdfHighlights(fid, data){ _pdfHighlights[fid] = data }
 
-async function openPdf(src){
+function openPdf(src){
   const f = fid(src);
-  document.getElementById('pdfPanelTitle').textContent = f;
   document.getElementById('pdfPanel').classList.add('on');
-  // pdf.js 未加载时退回 iframe
-  if(typeof pdfjsLib === 'undefined'){
-    const pagesDiv = document.getElementById('pdfPages');
-    pagesDiv.innerHTML = '<iframe src="'+pdfUrl(f)+'" style="width:100%;height:100%;border:none;background:#1a1d22;color-scheme:dark"></iframe>';
-    return;
-  }
-  if(_pdfFid === f) return; // 同一个文件不重新加载
-  _pdfFid = f; _pdfDoc = null; _pdfScale = 1.6;
-  document.getElementById('pdfZoomLabel').textContent = '160%';
-  const pagesDiv = document.getElementById('pdfPages');
-  pagesDiv.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">加载中…</div>';
-
-  try {
-    const loadingTask = pdfjsLib.getDocument(pdfUrl(f));
-    _pdfDoc = await loadingTask.promise;
-    pagesDiv.innerHTML = '';
-
-    const dpr = window.devicePixelRatio || 1;
-
-    async function _renderAllPages(){
-      const pagesDiv = document.getElementById('pdfPages');
-      pagesDiv.innerHTML = '';
-      const scale = _pdfScale;
-      for(let i=1; i<=_pdfDoc.numPages; i++){
-        const page = await _pdfDoc.getPage(i);
-        const vp = page.getViewport({scale: scale * dpr});
-        const logicalVp = page.getViewport({scale: scale});
-        const wrap = document.createElement('div');
-        wrap.className = 'pdf-page-wrap';
-        wrap.style.width = logicalVp.width + 'px';
-        wrap.style.height = logicalVp.height + 'px';
-
-        const canvas = document.createElement('canvas');
-        canvas.width = vp.width;
-        canvas.height = vp.height;
-        canvas.style.width = logicalVp.width + 'px';
-        canvas.style.height = logicalVp.height + 'px';
-        const ctx = canvas.getContext('2d');
-        await page.render({canvasContext: ctx, viewport: vp}).promise;
-        wrap.appendChild(canvas);
-
-        const overlay = document.createElement('div');
-        overlay.className = 'hl-overlay';
-        overlay.setAttribute('data-page', i);
-        wrap.appendChild(overlay);
-        pagesDiv.appendChild(wrap);
-      }
-      await renderHighlights();
+  const frame = document.getElementById('pdfFrame');
+  frame.src = '/static/pdf-reader.html';
+  frame.onload = function(){
+    frame.contentWindow.PDFReader.open(f, pdfUrl(f));
+    if(_pdfHighlights[f]) {
+      frame.contentWindow.PDFReader.setHighlights(f, _pdfHighlights[f]);
     }
-
-    await _renderAllPages();
-  } catch(e){
-    console.error('[pdf] load error:', e);
-    pagesDiv.innerHTML = '<div style="padding:40px;text-align:center;color:var(--err)">加载失败: '+esc(e.message)+'</div>';
-  }
-}
-
-async function renderHighlights(){
-  if(!_pdfDoc || !_pdfFid) return;
-  const hlData = _pdfHighlights[_pdfFid];
-  if(!hlData || !hlData.chunks || !hlData.chunks.length) return;
-
-  // 清除旧高亮
-  document.querySelectorAll('#pdfPages .hl-rect').forEach(e=>e.remove());
-
-  const numPages = _pdfDoc.numPages;
-  for(let ci=0; ci<hlData.chunks.length; ci++){
-    const chunk = hlData.chunks[ci];
-    const colorIdx = ci % HL_COLORS.length;
-
-    // 只在 chunk 指定的页码上搜索
-    const targetPages = (chunk.pages && chunk.pages.length) ? chunk.pages : Array.from({length: numPages}, (_,i)=>i+1);
-
-    for(const pn of targetPages){
-      if(pn < 1 || pn > numPages) continue;
-      const page = await _pdfDoc.getPage(pn);
-      const textContent = await page.getTextContent();
-      const vp = page.getViewport({scale: _pdfScale});  // 和渲染 scale 一致
-
-      // 搜索 chunk 文本中的关键句子（优先用完整文本）
-      const queries = _generatePdfQueries(chunk.text || chunk.text_preview || '');
-      for(const q of queries){
-        const matches = _findInTextContent(textContent, q);
-        for(const m of matches){
-          // 计算 viewport 坐标
-          const x0 = Math.min(...m.map(t => vp.convertToViewportPoint(t.transform[4], t.transform[5])[0]));
-          const y0 = Math.min(...m.map(t => vp.convertToViewportPoint(t.transform[4], t.transform[5])[1]));
-          const x1 = Math.max(...m.map(t => vp.convertToViewportPoint(t.transform[4] + t.width, t.transform[5] + t.height)[0]));
-          const y1 = Math.max(...m.map(t => vp.convertToViewportPoint(t.transform[4] + t.width, t.transform[5] + t.height)[1]));
-
-          // 扩展到栏宽
-          const overlay = document.querySelector('#pdfPages .hl-overlay[data-page="'+pn+'"]');
-          if(!overlay) continue;
-          const wrap = overlay.parentElement;
-          const wrapW = parseFloat(wrap.style.width);
-          const wrapH = parseFloat(wrap.style.height);
-
-          const leftPct = (x0 / wrapW * 100).toFixed(1);
-          const topPct = (y0 / wrapH * 100).toFixed(1);
-          const wPct = ((x1 - x0) / wrapW * 100).toFixed(1);
-          const hPct = ((y1 - y0) / wrapH * 100).toFixed(1);
-
-          const rect = document.createElement('div');
-          rect.className = 'hl-rect';
-          rect.style.cssText = [
-            'left:'+leftPct+'%', 'top:'+topPct+'%',
-            'width:'+wPct+'%', 'height:'+hPct+'%',
-            'background:'+HL_COLORS[colorIdx],
-            'opacity:0.45'
-          ].join(';');
-          overlay.appendChild(rect);
-        }
-      }
-    }
-  }
-}
-
-function _generatePdfQueries(text){
-  // 生成适合在 pdf.js textContent 中搜索的短片段
-  text = (text||'').replace(/[#*_]/g, '').replace(/\s+/g, ' ').trim();
-  const queries = [];
-  if(text.length >= 20) queries.push(text.slice(0, 200));
-  for(const s of text.split(/[.!?]/)){
-    const t = s.trim();
-    if(t.length >= 25 && t.length <= 150) queries.push(t);
-  }
-  return queries;
-}
-
-function _findInTextContent(textContent, query){
-  // 在 pdf.js textContent items 中搜索 query，返回匹配的 item 数组
-  const items = textContent.items.filter(it => it.str && it.str.trim().length > 1);
-  const normQuery = query.toLowerCase().replace(/\s+/g, ' ').trim();
-  if(normQuery.length < 15) return [];
-
-  // 构建全文和索引映射
-  const fullText = items.map(it => it.str).join(' ');
-  const lowerText = fullText.toLowerCase();
-
-  // 在全文和归一化文本中都搜索，取更长的匹配
-  const matches = [];
-  let idx = lowerText.indexOf(normQuery);
-  if(idx < 0){
-    // 尝试更短的片段
-    const words = normQuery.split(' ');
-    if(words.length > 5){
-      const short = words.slice(0, Math.ceil(words.length/2)).join(' ');
-      idx = lowerText.indexOf(short);
-    }
-  }
-  if(idx < 0) return [];
-
-  // 找到匹配位置对应的 items
-  let charPos = 0, startItem = -1, endItem = -1;
-  for(let i=0; i<items.length; i++){
-    const len = items[i].str.length + 1; // +1 for space
-    if(startItem < 0 && charPos + items[i].str.length > idx) startItem = i;
-    if(endItem < 0 && charPos > idx + normQuery.length) { endItem = i-1; break; }
-    charPos += len;
-  }
-  if(startItem < 0) return [];
-  if(endItem < 0) endItem = Math.min(startItem + 15, items.length - 1);
-
-  return items.slice(startItem, endItem + 1);
+  };
 }
 
 function openPdfPage(fid, page){
   openPdf(fid);
-  // 滚动到指定页
-  setTimeout(()=>{
-    const pages = document.querySelectorAll('#pdfPages .pdf-page-wrap');
-    if(pages[page-1]) pages[page-1].scrollIntoView({behavior:'smooth', block:'start'});
-  }, 500);
-}
-
-async function pdfZoom(delta){
-  _pdfScale = Math.max(0.5, Math.min(3.0, _pdfScale + delta));
-  document.getElementById('pdfZoomLabel').textContent = Math.round(_pdfScale * 100) + '%';
-  if(!_pdfDoc) return;
-  const dpr = window.devicePixelRatio || 1;
-  const pagesDiv = document.getElementById('pdfPages');
-  const canvases = pagesDiv.querySelectorAll('canvas');
-  const scale = _pdfScale;
-  for(let i=0; i<canvases.length; i++){
-    const pageNum = i + 1;
-    const page = await _pdfDoc.getPage(pageNum);
-    const vp = page.getViewport({scale: scale * dpr});
-    const logicalVp = page.getViewport({scale: scale});
-    const wrap = canvases[i].parentElement;
-    wrap.style.width = logicalVp.width + 'px';
-    wrap.style.height = logicalVp.height + 'px';
-    canvases[i].width = vp.width;
-    canvases[i].height = vp.height;
-    canvases[i].style.width = logicalVp.width + 'px';
-    canvases[i].style.height = logicalVp.height + 'px';
-    const ctx = canvases[i].getContext('2d');
-    await page.render({canvasContext: ctx, viewport: vp}).promise;
-  }
-  // 重新渲染高亮
-  document.querySelectorAll('#pdfPages .hl-rect').forEach(e=>e.remove());
-  await renderHighlights();
 }
 
 function closePdfPanel(){
   document.getElementById('pdfPanel').classList.remove('on');
-  document.getElementById('pdfPages').innerHTML = '';
-  _pdfDoc = null; _pdfFid = null;
+  const frame = document.getElementById('pdfFrame');
+  if(frame.contentWindow) frame.contentWindow.PDFReader.close();
+  frame.src = '';
 }
 function openPdfModal(src){ const f=fid(src);
   document.getElementById('modalPdfTitle').textContent=f;

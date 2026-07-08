@@ -21,6 +21,7 @@ if SERVER_DIR not in sys.path:
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from v5.core.config import V5_DIR as V5_PATH, PAPERS_DIR
 from v5.services.session_store import store
@@ -45,6 +46,9 @@ app = FastAPI(
 app.include_router(chat.router)
 app.include_router(sessions.router)
 app.include_router(papers.router)
+
+# 静态资源
+app.mount("/static", StaticFiles(directory=str(V5_PATH / "static")), name="static")
 
 
 # ── 前端 ──
