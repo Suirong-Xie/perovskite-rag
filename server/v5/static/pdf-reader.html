@@ -387,8 +387,11 @@ async function renderHighlights() {
         const wrapW = parseFloat(wrap.style.width);
         const wrapH = parseFloat(wrap.style.height);
 
+        // PDF y轴向上, viewport y轴向下, 所以 vy1 < vy0
         const w = (vx1-vx0)/wrapW*100;
-        const h = (vy1-vy0)/wrapH*100;
+        const h = Math.abs(vy1-vy0)/wrapH*100;
+        const top = Math.min(vy0, vy1)/wrapH*100;
+        const left = Math.min(vx0, vx1)/wrapW*100;
         if(w < 0.5 || h < 0.2) { stats.tooSmall++; continue; }
 
         const rect = document.createElement('div');
@@ -396,8 +399,8 @@ async function renderHighlights() {
         rect.setAttribute('data-color', String(colorIdx));
         rect.setAttribute('data-page', String(pn));
         rect.style.cssText = [
-          'left:'+(vx0/wrapW*100).toFixed(2)+'%',
-          'top:'+(vy0/wrapH*100).toFixed(2)+'%',
+          'left:'+left.toFixed(2)+'%',
+          'top:'+top.toFixed(2)+'%',
           'width:'+w.toFixed(2)+'%',
           'height:'+h.toFixed(2)+'%',
         ].join(';');
