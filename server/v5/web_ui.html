@@ -562,15 +562,19 @@ function qw(){ const v = document.getElementById('wi').value.trim(); if(v){ docu
 async function switchTo(id){
   console.log('[switchTo] to:', id, 'from:', sid, 'busy:', busy, 'ctrl:', !!ctrl);
   if(id===sid) return;
-  if(ctrl) { console.log('[switchTo] aborting ctrl'); ctrl.abort(); ctrl = null }
-  sid = id; localStorage.setItem('ss', id);
-  closePdfPanel();
-  setGenerating(false);
-  // 乐观更新：立即高亮被选中的项（不等 fetch 完成）
-  document.querySelectorAll('nav .item').forEach(e=>e.classList.remove('on'));
-  const target = document.querySelector('nav .item[data-sid="'+id+'"]');
-  if(target) target.classList.add('on');
-  await load(id); await renderSessions();
+  try {
+    if(ctrl) { console.log('[switchTo] aborting ctrl'); ctrl.abort(); ctrl = null }
+    sid = id; localStorage.setItem('ss', id);
+    closePdfPanel();
+    setGenerating(false);
+    document.querySelectorAll('nav .item').forEach(e=>e.classList.remove('on'));
+    const target = document.querySelector('nav .item[data-sid="'+id+'"]');
+    if(target) target.classList.add('on');
+    await load(id); await renderSessions();
+  } catch(e) {
+    console.error('[switchTo] error:', e);
+    await renderSessions();
+  }
 }
 
 async function streamTask(taskId, offset){
@@ -793,8 +797,9 @@ function openPdf(src){
   document.getElementById('pdfPanel').classList.add('on');
   const frame = document.getElementById('pdfFrame');
   frame.src = '/static/pdf-reader.html';
-  frame.onload = function(){
-    frame.contentWindow.PDFReader.open(f, pdfUrl(f));
+  frame.onload = async function(){
+    await frame.contentWindow.PDFReader.open(f, pdfUrl(f));
+    // open 完成后（所有页面已渲染）再设高亮数据
     if(_pdfHighlights[f]) {
       frame.contentWindow.PDFReader.setHighlights(f, _pdfHighlights[f]);
     }
@@ -808,7 +813,7 @@ function openPdfPage(fid, page){
 function closePdfPanel(){
   document.getElementById('pdfPanel').classList.remove('on');
   const frame = document.getElementById('pdfFrame');
-  if(frame.contentWindow) frame.contentWindow.PDFReader.close();
+  try { if(frame.contentWindow && frame.contentWindow.PDFReader) frame.contentWindow.PDFReader.close(); } catch(e){}
   frame.src = '';
 }
 function openPdfModal(src){ const f=fid(src);

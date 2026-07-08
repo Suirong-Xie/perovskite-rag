@@ -393,35 +393,36 @@ function makeQueries(text) {
 }
 
 function findInTextContent(items, query) {
-  const normQuery = query.toLowerCase().replace(/\s+/g, ' ').trim();
-  if(normQuery.length < 15) return [];
+  if(!items.length || !query) return [];
 
-  // Build full text
-  const fullText = items.map(it => it.str).join(' ');
-  const lowerText = fullText.toLowerCase();
+  // 词级匹配：容忍词序变化和部分匹配
+  const qWords = query.toLowerCase().replace(/[^\w\s-]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
+  if(qWords.length < 2) return [];
 
-  let idx = lowerText.indexOf(normQuery);
-  if(idx < 0) {
-    // Try shorter
-    const words = normQuery.split(' ');
-    if(words.length > 6) {
-      const half = words.slice(0, Math.ceil(words.length/2)).join(' ');
-      idx = lowerText.indexOf(half);
+  // 在 PDF items 中滑动匹配，找到最佳匹配区域
+  let bestStart = -1, bestScore = 0, bestLen = 0;
+  const windowLen = Math.min(qWords.length + 5, items.length);
+
+  for(let i = 0; i <= items.length - 3; i++) {
+    let score = 0;
+    const end = Math.min(i + windowLen, items.length);
+    for(let j = i; j < end; j++) {
+      const itemWord = (items[j].str || '').toLowerCase().replace(/[^\w\s-]/g, '').trim();
+      if(!itemWord || itemWord.length < 2) continue;
+      for(const qw of qWords) {
+        if(itemWord === qw) { score += 1; break; }
+      }
+    }
+    if(score > bestScore) {
+      bestScore = score;
+      bestStart = i;
+      bestLen = end - i;
     }
   }
-  if(idx < 0) return [];
 
-  // Map char position to items
-  let charPos = 0, startItem = -1, endItem = -1;
-  for(let i = 0; i < items.length; i++) {
-    const len = items[i].str.length + 1;
-    if(startItem < 0 && charPos + items[i].str.length > idx) startItem = i;
-    if(endItem < 0 && charPos > idx + normQuery.length) { endItem = i - 1; break; }
-    charPos += len;
-  }
-  if(startItem < 0) return [];
-  if(endItem < 0) endItem = Math.min(startItem + 12, items.length - 1);
-  return items.slice(startItem, endItem + 1);
+  // 需要至少匹配 25% 的查询词
+  if(bestScore < Math.max(2, qWords.length * 0.25)) return [];
+  return items.slice(bestStart, bestStart + bestLen);
 }
 
 // ── Navigation ──
