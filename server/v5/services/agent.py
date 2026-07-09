@@ -31,6 +31,7 @@ from ..core.schemas import AgentEvent, ToolCall, ToolResult
 from ..core.llm import chat_completion_stream, chat_completion_with_tools
 from .retrieval import search_papers
 from .gaussian_service import submit_job, check_job
+from .materials_service import analyze_perovskite, search_materials_project
 
 # ── 工具定义 ──
 
@@ -100,6 +101,34 @@ TOOLS = [
             "source": "Paper source filename (e.g., 'Nature_2021_xxx.pdf')",
         },
     },
+    {
+        "name": "analyze_perovskite",
+        "description": (
+            "Analyze a perovskite crystal structure using Pymatgen. "
+            "Given a chemical formula (e.g., 'MAPbI3', 'Cs0.1FA0.9PbI3', 'CsSnI3'), "
+            "computes the Goldschmidt tolerance factor, octahedral factor, and predicts "
+            "the crystal system and structural stability. "
+            "Use this to quickly assess whether a proposed perovskite composition "
+            "is structurally viable before doing DFT or searching papers."
+        ),
+        "parameters": {
+            "formula": "Perovskite chemical formula, ABX3 type (e.g., 'MAPbI3', 'Cs0.2FA0.8PbBr3')",
+        },
+    },
+    {
+        "name": "search_materials",
+        "description": (
+            "Search the Materials Project database (140k+ inorganic materials computed "
+            "with DFT) for known data on a chemical formula. Returns bandgap, "
+            "formation energy, crystal structure (cubic/tetragonal/orthorhombic), "
+            "and previous experimental or computational data. "
+            "Use this to check what is already known about a composition before "
+            "running your own calculations."
+        ),
+        "parameters": {
+            "formula": "Chemical formula to search (e.g., 'PbTiO3', 'CsPbI3')",
+        },
+    },
 ]
 
 # ── Agent 系统 prompt ──
@@ -165,11 +194,35 @@ AGENT_SYSTEM_PROMPT = """你是 Sunny，钙钛矿太阳能电池领域的 AI 研
 {"name": "extract_data", "arguments": {"source": "论文文件名.pdf"}}
 </tool_call>
 
+<tool_call>
+{"name": "analyze_perovskite", "arguments": {"formula": "MAPbI3"}}
+</tool_call>
+
+<tool_call>
+{"name": "search_materials", "arguments": {"formula": "CsPbI3"}}
+</tool_call>
+
+<tool_call>
+{"name": "analyze_perovskite", "arguments": {"formula": "MAPbI3"}}
+</tool_call>
+
+<tool_call>
+{"name": "search_materials", "arguments": {"formula": "CsPbI3"}}
+</tool_call>
+
 规则：
 - 调用工具时，只输出 <tool_call> 块，不要写其他内容
 - **获得足够信息后立即输出最终回答，不要继续搜索**
 - 最多调用 4 次工具，之后无论结果如何都必须回答
 - 回答中不要说你搜了什么、查了什么、用了什么工具，直接给答案
+
+## 材料分析工具使用指南
+
+- **analyze_perovskite**: 快速评估钙钛矿组分是否结构稳定（秒级返回）。用户问"Doped MAPbI3 is stable?"时，先跑这个。基于 Shannon 离子半径计算容忍因子
+- **search_materials**: 查询 Materials Project DFT 数据库。用户问"known bandgap of CsSnI3?"时用。需要对应的 MP_API_KEY 才可用
+- **run_gaussian**: 精确 DFT 计算（小时级）。只有当用户明确要做 DFT 计算，且先经过结构分析确认可行性后再使用
+
+优先级: analyze_perovskite (快速筛选) → search_materials (已有数据) → search_papers (文献验证) → run_gaussian (精确计算)
 
 ## 引用规则（极其重要，违反将导致引用失效）
 
@@ -465,12 +518,69 @@ def execute_extract_data_tool(arguments: dict) -> tuple:
         return (ToolResult(ToolCall("extract_data", arguments), "", error=str(e)), {})
 
 
+def execute_analyze_perovskite_tool(arguments: dict) -> tuple:
+    """执行 analyze_perovskite 工具。"""
+    formula = arguments.get("formula", "")
+    if not formula:
+        return (ToolResult(ToolCall("analyze_perovskite", arguments), "", error="formula is required"), None)
+
+    try:
+        result = analyze_perovskite(formula)
+        if "error" in result:
+            return (ToolResult(ToolCall("analyze_perovskite", arguments), result["error"], error=result["error"]), None)
+
+        output_lines = [
+            f"Structure analysis for {result['formula']} ({result['reduced_formula']}):",
+            f"  A-site: {', '.join(result['A_site'])} (R_A = {result['r_A']:.4f} Å)",
+            f"  B-site: {', '.join(result['B_site'])} (R_B = {result['r_B']:.4f} Å)",
+            f"  X-site: {', '.join(result['X_site'])} (R_X = {result['r_X']:.4f} Å)",
+            f"  Goldschmidt tolerance factor t = {result['tolerance_factor']:.4f}",
+            f"  Octahedral factor μ = {result['octahedral_factor']:.4f}",
+            f"  Predicted crystal system: {result['predicted_crystal_system']}",
+            f"  Likely stable: {'YES' if result['likely_stable'] else 'NO'}",
+            f"  Issues: {'; '.join(result['issues'])}",
+        ]
+        return (ToolResult(ToolCall("analyze_perovskite", arguments), "\n".join(output_lines)), None)
+    except Exception as e:
+        return (ToolResult(ToolCall("analyze_perovskite", arguments), "", error=str(e)), None)
+
+
+def execute_search_materials_tool(arguments: dict) -> tuple:
+    """执行 search_materials 工具。"""
+    formula = arguments.get("formula", "")
+    if not formula:
+        return (ToolResult(ToolCall("search_materials", arguments), "", error="formula is required"), None)
+
+    try:
+        result = search_materials_project(formula)
+        if "error" in result:
+            return (ToolResult(ToolCall("search_materials", arguments), result["error"]), None)
+
+        if not result.get("results"):
+            return (ToolResult(ToolCall("search_materials", arguments), result.get("message", "No results")), None)
+
+        lines = [f"Materials Project results for '{result['formula']}':"]
+        lines.append(f"Source: {result.get('source', 'MP')}")
+        for r in result["results"]:
+            lines.append(
+                f"  [{r['material_id']}] {r['formula']} | "
+                f"Bandgap: {r['band_gap_eV']} eV | "
+                f"Formation energy: {r['formation_energy_eV_per_atom']} eV/atom | "
+                f"Crystal: {r['crystal_system']}"
+            )
+        return (ToolResult(ToolCall("search_materials", arguments), "\n".join(lines)), None)
+    except Exception as e:
+        return (ToolResult(ToolCall("search_materials", arguments), "", error=str(e)), None)
+
+
 TOOL_EXECUTORS: dict[str, Callable[[dict], tuple]] = {
     "search_papers": execute_search_tool,
     "read_paper": execute_read_tool,
     "run_gaussian": execute_gaussian_tool,
     "check_gaussian": execute_check_gaussian_tool,
     "extract_data": execute_extract_data_tool,
+    "analyze_perovskite": execute_analyze_perovskite_tool,
+    "search_materials": execute_search_materials_tool,
 }
 
 
