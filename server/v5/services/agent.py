@@ -32,6 +32,8 @@ from ..core.llm import chat_completion_stream, chat_completion_with_tools
 from .retrieval import search_papers
 from .gaussian_service import submit_job, check_job
 from .materials_service import analyze_perovskite, search_materials_project
+from .arxiv_service import search_arxiv, download_arxiv_pdf, clean_paper_text
+from .semantic_scholar_service import search_semantic_scholar
 
 # ── 工具定义 ──
 
@@ -102,6 +104,55 @@ TOOLS = [
         },
     },
     {
+        "name": "search_arxiv",
+        "description": (
+            "Search arXiv for perovskite solar cell preprints. Returns titles, "
+            "abstracts, authors, publication dates, and PDF download links. "
+            "arXiv has 160,000+ perovskite-related preprints, often covering "
+            "the latest research (2024-2026) before journal publication. "
+            "Use this alongside search_papers to find recent work not yet in "
+            "the local database."
+        ),
+        "parameters": {
+            "query": "English search query (e.g., 'inverted perovskite stability 2024')",
+            "max_results": "Number of results to return (default 5, max 10)",
+        },
+    },
+    {
+        "name": "read_arxiv_paper",
+        "description": (
+            "Download and read the full text of an arXiv paper given its arXiv ID "
+            "(e.g., '2606.13414' or '2606.13414v1'). Downloads the PDF from arXiv, "
+            "extracts text, and automatically strips references, acknowledgments, "
+            "and other non-content sections. Use this to deeply read a paper found "
+            "via search_arxiv when the abstract alone is insufficient."
+        ),
+        "parameters": {
+            "arxiv_id": "ArXiv paper ID from search_arxiv results (e.g., '2606.13414')",
+        },
+    },
+    {
+        "name": "search_semantic_scholar",
+        "description": (
+            "Search Semantic Scholar, a massive academic database covering 200M+ "
+            "published papers across all scientific disciplines. Returns titles, "
+            "abstracts, authors, journal/venue, publication year, and citation "
+            "counts. Citation count is a strong quality signal — highly-cited "
+            "papers are usually landmark works. "
+            "Use this for: discovering papers beyond our local Nature collection, "
+            "finding the most influential papers on a topic (sort by citations), "
+            "or searching for papers from non-Nature journals (Science, ACS, "
+            "Wiley, RSC, etc.). "
+            "Complements search_papers (local full-text) and search_arxiv (preprints)."
+        ),
+        "parameters": {
+            "query": "English search query (e.g., 'perovskite stability under humidity')",
+            "max_results": "Number of results (default 5, max 10)",
+            "year_min": "Optional: earliest publication year (e.g., 2022)",
+            "year_max": "Optional: latest publication year (e.g., 2026)",
+        },
+    },
+    {
         "name": "analyze_perovskite",
         "description": (
             "Analyze a perovskite crystal structure using Pymatgen. "
@@ -134,32 +185,40 @@ TOOLS = [
 # ── Agent 系统 prompt ──
 
 AGENT_SYSTEM_PROMPT = """你是 Sunny，钙钛矿太阳能电池领域的 AI 研究助手。
-你是一个具备文献检索能力的科研 Agent，你的知识来源是钙钛矿论文数据库（chunked_v3，收录 Nature 系列期刊论文）。
+你是一个具备文献检索能力的科研 Agent，你的知识来源包括：
+  1. 本地论文数据库（Nature 系列期刊，504 篇全文）
+  2. arXiv 预印本（16 万+ 钙钛矿论文，含最新研究）
+  3. Semantic Scholar（2 亿+ 已发表论文，全学科，含引用数）
+  4. Materials Project DFT 数据库（14 万+ 无机材料）
 
 ## 工作流程（必须遵守）
 
 对于用户的每个问题，按以下步骤执行：
 
-### 第一步：制定检索计划（Brief plan，一轮即可）
+### 第一步：制定检索计划（5 秒思考）
 - 分析问题涉及哪些核心维度（如效率、稳定性、工艺、材料）
 - 确定 2-3 个不同角度的英文搜索关键词
+- **判断时效性**：问题是否涉及最新进展（2024-2026）？是 → 优先 arXiv；否 → 并行搜索
 - **如果用户消息中已附带系统预检索结果，优先使用它们，只对缺失维度补充搜索**
 
-### 第二步：多角度检索（至少 2 次搜索，每次不同角度）
+### 第二步：多角度检索（至少 2 次搜索）
+- **建议并行使用 search_papers + search_arxiv + search_semantic_scholar** 以最大化覆盖面
+- search_semantic_scholar 覆盖 Science/ACS/Wiley/RSC 等非 Nature 期刊，引用数高的论文通常是领域里程碑
 - 对比类问题：分别搜索 A、B、A vs B
-- "提升/改进"类问题：搜索"current state"、"solutions"、"challenges"
+- "最新/前沿/近期"类问题：search_arxiv + search_semantic_scholar 并行
 - 如果第一次搜索结果不理想，立即换关键词重搜
 - 每次搜索后评估结果质量，决定是否需要继续
 
-### 第三步：深入阅读（可选，搜索结果不足时）
-- 用 read_paper 阅读关键论文全文
-- 优先读相似度最高、期刊最权威的论文
+### 第三步：深入阅读（按需）
+- 本地论文用 read_paper（已自动清洗参考文献/致谢）
+- arXiv 论文用 read_arxiv_paper（下载 PDF → 清洗 → 返回正文）
+- 优先读最相关的论文（不论来源）
 
 ### 第四步：自检 + 回答
 在输出最终答案前，先问自己：
 - 我是否覆盖了所有关键维度？
 - 我的每个数据点都有文献支撑吗？
-- 引用的 File ID 都来自搜索结果吗？
+- 引用的 File ID / arXiv ID 都来自搜索结果吗？
 
 如果任一答案为"否"，继续搜索。如果全部为"是"，输出答案。
 
@@ -168,7 +227,11 @@ AGENT_SYSTEM_PROMPT = """你是 Sunny，钙钛矿太阳能电池领域的 AI 研
 - 始终使用英文搜索，关键词精确（例："hole transport layer stability" 而非 "improve solar cells"）
 - 对比类问题分开搜索，不要一次搜两个主题
 - 搜索结果不理想时立即换角度，不要勉强用不相关的结果
-- ⚠️ 最多 3-4 次工具调用后必须给出最终回答，不要无限搜索
+- ⚠️ 工具调用预算：总共只有 4 次调用机会！合理分配：
+  - 1-2 次搜索（search_papers + search_arxiv + search_semantic_scholar）
+  - 0-1 次阅读（只读最相关的那篇）
+  - 剩余预算用来回答
+  - **第 4 次调用后必须回答，绝对不能继续调用工具**
 
 ## 可用工具
 
@@ -179,7 +242,19 @@ AGENT_SYSTEM_PROMPT = """你是 Sunny，钙钛矿太阳能电池领域的 AI 研
 </tool_call>
 
 <tool_call>
+{"name": "search_arxiv", "arguments": {"query": "英文搜索查询", "max_results": 5}}
+</tool_call>
+
+<tool_call>
+{"name": "search_semantic_scholar", "arguments": {"query": "英文搜索查询", "max_results": 5, "year_min": 2022}}
+</tool_call>
+
+<tool_call>
 {"name": "read_paper", "arguments": {"source": "论文文件名.pdf"}}
+</tool_call>
+
+<tool_call>
+{"name": "read_arxiv_paper", "arguments": {"arxiv_id": "arXiv论文ID"}}
 </tool_call>
 
 <tool_call>
@@ -202,35 +277,42 @@ AGENT_SYSTEM_PROMPT = """你是 Sunny，钙钛矿太阳能电池领域的 AI 研
 {"name": "search_materials", "arguments": {"formula": "CsPbI3"}}
 </tool_call>
 
-<tool_call>
-{"name": "analyze_perovskite", "arguments": {"formula": "MAPbI3"}}
-</tool_call>
-
-<tool_call>
-{"name": "search_materials", "arguments": {"formula": "CsPbI3"}}
-</tool_call>
-
 规则：
 - 调用工具时，只输出 <tool_call> 块，不要写其他内容
 - **获得足够信息后立即输出最终回答，不要继续搜索**
-- 最多调用 4 次工具，之后无论结果如何都必须回答
+- ⚠️ 硬性限制：最多调用 4 次工具！第 4 次之后，无论结果如何，必须直接给出最终答案（不要输出 <tool_call>）
+- 当你至少有 3 条相关论文信息后，就应该开始回答，不要试图覆盖所有文献
 - 回答中不要说你搜了什么、查了什么、用了什么工具，直接给答案
+
+## 文献搜索工具使用指南
+
+- **search_papers**: 搜索本地 Nature 期刊全文数据库（504 篇）。论文内容已向量化，适合语义搜索和深度阅读
+- **search_arxiv**: 搜索 arXiv 预印本（16 万+ 钙钛矿论文）。覆盖最新研究（2024-2026），返回摘要和 PDF 链接。适合找前沿/未发表工作
+- **search_semantic_scholar**: 搜索 Semantic Scholar（2 亿+ 已发表论文）。覆盖 Science/ACS/Wiley/RSC 等非 Nature 期刊。返回引用数（质量信号）、DOI、摘要。适合：发现高影响力论文、找非 Nature 期刊的工作、按年份过滤
+- **read_paper**: 阅读本地论文全文（已自动清洗参考文献/致谢/作者贡献等尾部噪声）
+- **read_arxiv_paper**: 下载并阅读 arXiv 论文全文（已自动清洗）。首次搜索到 arXiv 论文后，如果摘要信息不够，用这个深入阅读
+
+搜索优先级建议：
+  问问自己"这个问题是关于已知领域还是最新进展？"
+  - 已知领域 → search_papers + search_arxiv + search_semantic_scholar 三路并行
+  - 最新进展 → search_arxiv + search_semantic_scholar 优先
+  - 找高影响力里程碑 → search_semantic_scholar，按引用数判断
+  - 两轮搜索后仍不理想 → 换关键词/换数据源
 
 ## 材料分析工具使用指南
 
-- **analyze_perovskite**: 快速评估钙钛矿组分是否结构稳定（秒级返回）。用户问"Doped MAPbI3 is stable?"时，先跑这个。基于 Shannon 离子半径计算容忍因子
-- **search_materials**: 查询 Materials Project DFT 数据库。用户问"known bandgap of CsSnI3?"时用。需要对应的 MP_API_KEY 才可用
-- **run_gaussian**: 精确 DFT 计算（小时级）。只有当用户明确要做 DFT 计算，且先经过结构分析确认可行性后再使用
+- **analyze_perovskite**: 快速评估钙钛矿组分是否结构稳定（秒级返回）。用户问"Doped MAPbI3 is stable?"时，先跑这个
+- **search_materials**: 查询 Materials Project DFT 数据库。用户问"known bandgap of CsSnI3?"时用
+- **run_gaussian**: 精确 DFT 计算（小时级）。只有当用户明确要做 DFT 计算时才使用
 
-优先级: analyze_perovskite (快速筛选) → search_materials (已有数据) → search_papers (文献验证) → run_gaussian (精确计算)
+优先级: analyze_perovskite → search_materials → 文献搜索 → run_gaussian
 
 ## 引用规则（极其重要，违反将导致引用失效）
 
-- 你只能用搜索工具返回的 **File ID** 来构建引用链接
-- 引用格式：`[📄](/api/pdf/文件ID)` — 把 File ID 原样填入
-- **绝对禁止自己编造 File ID**
-- 正确示例：搜索结果有 `NatComm_2014_ncomms4461` → 引用写 `[📄](/api/pdf/NatComm_2014_ncomms4461)`
-- 错误示例：自己编造 `Nature_2023_xxx` → 不存在，引用失效！
+- 本地论文：引用搜索工具返回的 **File ID**，格式 `[📄](/api/pdf/文件ID)`
+- arXiv 论文：引用 arXiv ID，格式 `[arXiv:2606.13414](https://arxiv.org/abs/2606.13414)`
+- **绝对禁止自己编造 File ID 或 arXiv ID**
+- 每个关键数据点后附加引用链接
 
 ## 回答风格
 
@@ -405,11 +487,20 @@ def execute_read_tool(arguments: dict) -> tuple:
                 ToolCall("read_paper", arguments),
                 "", error=f"pdftotext error: {proc.stderr[:200]}"
             ), {})
-        text = proc.stdout[:5000]  # 限制长度避免 token 爆炸
+
+        raw_text = proc.stdout
+        # 清洗：去参考文献、致谢、页眉页脚
+        cleaned = clean_paper_text(raw_text)
+        content = cleaned[:5000]  # 限制长度
+
+        if len(cleaned) < len(raw_text) * 0.5:
+            # 清洗太激进，退回原始文本
+            content = raw_text[:5000]
+
         return (ToolResult(
             ToolCall("read_paper", arguments),
-            f"Content of {source} (first 5000 chars):\n\n{text}",
-        ), {"source": source, "content": text[:600]})
+            f"Content of {source} (cleaned, first 5000 chars):\n\n{content}",
+        ), {"source": source, "content": content[:600]})
     except subprocess.TimeoutExpired:
         return (ToolResult(
             ToolCall("read_paper", arguments),
@@ -420,6 +511,150 @@ def execute_read_tool(arguments: dict) -> tuple:
             ToolCall("read_paper", arguments),
             "", error=str(e)
         ), {})
+
+
+def execute_search_arxiv_tool(arguments: dict) -> tuple:
+    """执行 search_arxiv 工具。"""
+    query = arguments.get("query", "")
+    max_results = min(int(arguments.get("max_results", 5)), 10)
+    if not query:
+        return (ToolResult(
+            ToolCall("search_arxiv", arguments),
+            "", error="query is required"
+        ), [])
+
+    results = search_arxiv(query, max_results=max_results)
+    if not results:
+        return (ToolResult(
+            ToolCall("search_arxiv", arguments),
+            "No results found on arXiv for this query.",
+        ), [])
+
+    output_lines = [f"Found {len(results)} arXiv papers for '{query}':\n"]
+    for i, r in enumerate(results):
+        authors_str = ", ".join(r.get("authors", [])[:3])
+        if len(r.get("authors", [])) > 3:
+            authors_str += " et al."
+        output_lines.append(
+            f"[{i+1}] {r.get('title', 'N/A')}\n"
+            f"    Authors: {authors_str}\n"
+            f"    Published: {r.get('published', 'N/A')}\n"
+            f"    arXiv ID: {r.get('arxiv_id', 'N/A')}\n"
+            f"    PDF: {r.get('pdf_url', 'N/A')}\n"
+            f"    Category: {r.get('category', 'N/A')}\n"
+            f"    Abstract: {r.get('summary', '')[:500]}"
+        )
+    return (ToolResult(
+        ToolCall("search_arxiv", arguments),
+        "\n".join(output_lines),
+    ), results)
+
+
+def execute_read_arxiv_tool(arguments: dict) -> tuple:
+    """执行 read_arxiv_paper 工具。"""
+    arxiv_id = arguments.get("arxiv_id", "")
+    if not arxiv_id:
+        return (ToolResult(
+            ToolCall("read_arxiv_paper", arguments),
+            "", error="arxiv_id is required"
+        ), {})
+
+    pdf_path = download_arxiv_pdf(arxiv_id)
+    if not pdf_path:
+        return (ToolResult(
+            ToolCall("read_arxiv_paper", arguments),
+            f"Failed to download PDF for arXiv:{arxiv_id}",
+        ), {})
+
+    try:
+        proc = subprocess.run(
+            ["pdftotext", pdf_path, "-"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            return (ToolResult(
+                ToolCall("read_arxiv_paper", arguments),
+                "", error=f"pdftotext error: {proc.stderr[:200]}"
+            ), {})
+
+        cleaned = clean_paper_text(proc.stdout)
+        content = cleaned[:5000]
+
+        # 构建引用信息
+        source = f"arXiv:{arxiv_id}"
+        return (ToolResult(
+            ToolCall("read_arxiv_paper", arguments),
+            f"Content of arXiv:{arxiv_id} (cleaned, first 5000 chars):\n\n{content}",
+        ), {"source": source, "content": content[:600]})
+    except subprocess.TimeoutExpired:
+        return (ToolResult(
+            ToolCall("read_arxiv_paper", arguments),
+            "", error="pdftotext timed out after 30s"
+        ), {})
+    except Exception as e:
+        return (ToolResult(
+            ToolCall("read_arxiv_paper", arguments),
+            "", error=str(e)
+        ), {})
+    finally:
+        # 清理临时文件
+        try:
+            os.unlink(pdf_path)
+        except Exception:
+            pass
+
+
+def execute_semantic_scholar_tool(arguments: dict) -> tuple:
+    """执行 search_semantic_scholar 工具。"""
+    query = arguments.get("query", "")
+    max_results = min(int(arguments.get("max_results", 5)), 10)
+    year_min = arguments.get("year_min")
+    year_max = arguments.get("year_max")
+
+    if year_min:
+        try:
+            year_min = int(year_min)
+        except (ValueError, TypeError):
+            year_min = None
+    if year_max:
+        try:
+            year_max = int(year_max)
+        except (ValueError, TypeError):
+            year_max = None
+
+    if not query:
+        return (ToolResult(
+            ToolCall("search_semantic_scholar", arguments),
+            "", error="query is required"
+        ), [])
+
+    results = search_semantic_scholar(
+        query, max_results=max_results,
+        year_min=year_min, year_max=year_max,
+    )
+    if not results:
+        return (ToolResult(
+            ToolCall("search_semantic_scholar", arguments),
+            "No results found on Semantic Scholar for this query.",
+        ), [])
+
+    output_lines = [f"Found {len(results)} papers on Semantic Scholar for '{query}':\n"]
+    for i, r in enumerate(results):
+        authors_str = ", ".join(r.get("authors", [])[:3])
+        if len(r.get("authors", [])) > 3:
+            authors_str += " et al."
+        year_citations = f"{r.get('year', 'N/A')} · {r.get('citationCount', 0)} citations"
+        output_lines.append(
+            f"[{i+1}] {r.get('title', 'N/A')}\n"
+            f"    Authors: {authors_str}\n"
+            f"    Venue: {r.get('venue', 'N/A')} · {year_citations}\n"
+            f"    DOI: {r.get('doi', 'N/A')}\n"
+            f"    Abstract: {r.get('abstract', '(abstract not available)')[:500]}"
+        )
+    return (ToolResult(
+        ToolCall("search_semantic_scholar", arguments),
+        "\n".join(output_lines),
+    ), results)
 
 
 # ── Skill 注册表 ──
@@ -576,6 +811,9 @@ def execute_search_materials_tool(arguments: dict) -> tuple:
 TOOL_EXECUTORS: dict[str, Callable[[dict], tuple]] = {
     "search_papers": execute_search_tool,
     "read_paper": execute_read_tool,
+    "search_arxiv": execute_search_arxiv_tool,
+    "read_arxiv_paper": execute_read_arxiv_tool,
+    "search_semantic_scholar": execute_semantic_scholar_tool,
     "run_gaussian": execute_gaussian_tool,
     "check_gaussian": execute_check_gaussian_tool,
     "extract_data": execute_extract_data_tool,
@@ -684,9 +922,10 @@ async def run_agent_loop(
     if use_native_tools:
         # 为原生 function calling 添加提示（工具通过 API tools 参数传入）
         messages[0]["content"] += (
-            "\n\n你可以直接调用可用的函数（search_papers / read_paper）来检索和阅读文献。"
-            "请先用 search_papers 检索相关论文，必要时用 read_paper 深入阅读，"
-            "然后基于文献数据给出带引用的回答。"
+            "\n\n你可以直接调用可用的函数（search_papers / search_arxiv / "
+            "search_semantic_scholar / read_paper / read_arxiv_paper 等）来检索和"
+            "阅读文献。三路并行搜索 (本地 + arXiv + Semantic Scholar) 覆盖最广。"
+            "获得 3+ 条相关结果后立即开始回答，不要反复搜索。"
         )
 
     # Agent 循环
@@ -694,9 +933,29 @@ async def run_agent_loop(
         log(f"TASK {task_id} Round {round_num}/{AGENT_MAX_ROUNDS} "
             f"({'native' if use_native_tools else 'text'} tools)")
 
+        # 接近上限时注入强制停止提示
+        if round_num == AGENT_MAX_ROUNDS - 1:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "⚠️ 你只剩最后一轮工具调用机会。如果还需要更多信息，仅调用一次工具；"
+                    "如果你已有至少 3 条搜索结果，直接给出最终回答，不要再调用工具。"
+                ),
+            })
+        elif round_num == AGENT_MAX_ROUNDS:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "🚨 这是你的最后一轮。工具已被禁用，你必须基于已获得的论文信息"
+                    "给出完整的最终回答。整理关键发现，附上引用，直接输出。"
+                ),
+            })
+
         if use_native_tools:
             # ── 原生 Function Calling 路径 ──
-            gen = _run_native_round(task_id, round_num, messages)
+            # 最后一轮关闭工具强制回答，倒数第二轮也收紧
+            force_answer = (round_num >= AGENT_MAX_ROUNDS)
+            gen = _run_native_round(task_id, round_num, messages, force_answer=force_answer)
         else:
             # ── 文本 <tool_call> 解析路径 ──
             gen = _run_text_round(task_id, round_num, messages)
@@ -786,15 +1045,20 @@ async def run_agent_loop(
 
 async def _run_native_round(
     task_id: str, round_num: int, messages: list[dict],
+    force_answer: bool = False,
 ) -> AsyncGenerator[AgentEvent, None]:
     """使用原生 Function Calling 执行一轮 LLM 调用。
     实时流式推送 text content，完成后检测 tool_calls。
     如果有 tool_calls，yield 内部 _tool_call 事件；否则 yield done。
+
+    Args:
+        force_answer: 为 True 时不传 tools，强制纯文本回答
     """
     full_response = ""
     tool_calls = None
+    active_tools = [] if force_answer else TOOLS
     try:
-        async for event in chat_completion_with_tools(messages, TOOLS):
+        async for event in chat_completion_with_tools(messages, active_tools):
             if event["type"] == "text":
                 full_response += event["content"]
                 yield AgentEvent.text(event["content"])

@@ -1,187 +1,375 @@
-# PerovskiteGPT v4 — Architecture Document
+# PerovskiteGPT V5 — 系统架构文档
 
-> 当前运行版本：**v4（Sunny-RAG）**
-> 历史版本：v2（Agentic RAG, llama3:70b）→ v1（朴素 RAG, 已归档）
+> 最后更新: 2026-07-10
+> 状态: P1 完成 (Semantic Scholar 接入) → P2 待启动
 
 ---
 
-## 系统架构
+## 1. 项目概览
+
+PerovskiteGPT 是一个钙钛矿太阳能电池领域的 AI 研究助手。核心能力：
+
+- **文献搜索**：本地 RAG (504 篇 Nature 全文) + arXiv API (16 万+ 预印本) + Semantic Scholar (2 亿+ 论文)
+- **深度阅读**：PDF 下载 → pdftotext 提取 → 自动清洗参考文献/致谢噪声
+- **材料计算**：Pymatgen 容忍因子分析 + Materials Project DFT 查询 + Gaussian 16 第一性原理计算
+- **前端交互**：SSE 流式输出 + PDF 侧边栏 + 段落级高亮定位
+
+技术栈：FastAPI + DeepSeek API (ReAct Agent) + Ollama embedding + NumPy 向量检索 + pdftotext + Pymatgen + Gaussian 16
+
+---
+
+## 2. 目录结构
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                   用户浏览器 (Web UI)                         │
-│              http://localhost:8001/                          │
-│              web_ui.html (825 lines)                         │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ POST /api/chat  {message, session_id}
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│              V4 FastAPI Server (:8001)                       │
-│              server.py (~750 lines)                          │
-│                                                              │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │ 1. 接收用户请求                                       │   │
-│  │ 2. 创建 task_id（生成任务 vs SSE 解耦）               │   │
-│  │ 3. 后台 asyncio.create_task 启动 run_generation()     │   │
-│  │ 4. POST 到 OpenClaw Gateway → Sunny agent             │   │
-│  │ 5. Sunny 推理 + 检索 + 生成回答                        │   │
-│  │ 6. 后处理：提取 📄 链接 → PDF 高亮区域搜索             │   │
-│  │ 7. SSE 流式返回（支持多个客户端并发消费同一 task）      │   │
-│  └──────────────────────────────────────────────────────┘   │
-└──────────┬────────────────────────────────────────┬─────────┘
-           │                                        │
-           ▼                                        ▼
-┌─────────────────────┐              ┌─────────────────────────┐
-│  Ollama (GPU 1)      │              │  OpenClaw Gateway       │
-│  127.0.0.1:11435     │              │  localhost:18789        │
-│  mxbai-embed-large   │              │                         │
-│  (334M, 1024维)      │              │  → Sunny agent           │
-│                     │              │    (deepseek-v4-flash)   │
-│  用途：query 向量化   │              │    + DeepSeek API       │
-└──────────┬──────────┘              └─────────────────────────┘
-           │
-           ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Sunny-RAG 检索层                                 │
-│              sunny-rag/scripts/search_tool.py                │
-│                                                              │
-│  1. 接收 query + top_k                                        │
-│  2. POST 到 Ollama 获取 query 向量                            │
-│  3. numpy 向量检索（余弦相似度）                               │
-│  4. journal_rank 重排序                                       │
-│  5. 返回 top_k 结果 JSON                                      │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-              ┌─────────────────────────┐
-              │  sunny-rag/data/        │
-              │  vectors.npy    (722MB) │
-              │  texts.jsonl   (119MB)  │
-              │  id_to_index.json (8MB) │
-              │  188,214 chunks         │
-              └─────────────────────────┘
+perovskite-rag/
+├── server/v5/                    # ← 当前主版本
+│   ├── main.py                   # FastAPI 入口, 端口 8002
+│   ├── web_ui.html               # 前端单页 (~900 行)
+│   ├── core/
+│   │   ├── config.py             # 全局配置 (路径/LLM/检索/Agent)
+│   │   ├── llm.py                # LLM 抽象层 (DeepSeek + OpenClaw)
+│   │   └── schemas.py            # Pydantic 数据模型 + SSE 事件定义
+│   ├── routers/
+│   │   ├── chat.py               # 核心聊天 API + Agent 编排 (~530行)
+│   │   ├── sessions.py           # 会话 CRUD API
+│   │   └── papers.py             # PDF 服务 + 高亮 API
+│   ├── services/
+│   │   ├── agent.py              # ★ ReAct Agent 循环引擎 (~980行)
+│   │   ├── retrieval.py          # 本地 RAG 检索 (语义 + BM25 混合)
+│   │   ├── vector_search.py      # 向量检索核心 (Ollama embed + NumPy cosine)
+│   │   ├── arxiv_service.py      # arXiv API 客户端 (搜索/下载/清洗)
+│   │   ├── semantic_scholar_service.py  # Semantic Scholar API (2亿+ 论文)
+│   │   ├── annotator.py          # PDF 段落级高亮元数据提取
+│   │   ├── materials_service.py  # Pymatgen 钙钛矿结构分析
+│   │   ├── gaussian_service.py   # Gaussian 16 DFT 计算提交/监控
+│   │   ├── translator.py         # 中文→英文查询翻译
+│   │   └── session_store.py      # 会话持久化 (JSON 文件)
+│   └── static/
+│       └── pdf-reader.html       # PDF 阅读器组件 (pdf.js + CSS overlay)
+│
+├── data/
+│   └── vector_db/                  # 向量库数据
+│       ├── texts.jsonl             # 文本数据
+│       └── vectors.npy             # mxbai-embed-large (1024维) 向量矩阵
+│
+├── pipeline/                     # 数据摄入管道 (离线)
+│   ├── pdf_text_extractor.py     # PyMuPDF 双栏感知文本提取
+│   ├── llm_chunker_v5.py         # LLM 语义分块 (当前主力)
+│   ├── llm_semantic_chunker.py   # 实验性语义分块 (句子嵌入相似度)
+│   ├── update_vectors.py         # Ollama 向量化 (texts.jsonl → vectors.npy)
+│   ├── ingest_with_rank.py       # 基础分块 + 期刊排名元数据
+│   ├── fetch_top_papers.py       # Nature 系列论文批量获取
+│   ├── sync_nature.py            # Nature 期刊 PDF 同步
+│   ├── add_journal_rank.py       # 期刊排名元数据补充
+│   └── daily_incremental.py      # 每日增量更新管道
+│
+└── .claude/skills/               # Claude Code 技能
+    ├── search-papers.md          # 自定义论文搜索 skill
+    └── manage-server.md          # 服务管理 skill
 ```
 
-## 生成任务与 SSE 解耦
+---
 
-v4 的核心架构改进是生成任务与输出通道分离：
+## 3. 数据管道
+
+### 3.1 论文来源
 
 ```
-POST /api/chat {message, session_id}
+Nature 期刊官网
   │
-  ├→ 创建 task_id
-  ├→ 启动 async def run_generation(task_id, sid, msg)
-  └→ 立即返回 {task_id, session_id}
-
-run_generation() 后台运行：
-  1. POST Sunny agent (OpenClaw Gateway)
-  2. Sunny 内部:
-     a. 分析问题
-     b. 调用 search_tool.py 检索相关论文
-     c. 综合推理生成回答
-     d. 输出中包含 [📄](/api/pdf/xxx.pdf) 引用
-  3. 后处理:
-     a. 提取 📄 链接
-     b. 用 PyMuPDF 在对应 PDF 中搜索 chunk 文本位置
-     c. 对称句号扩展（找上下句号边界）
-     d. 跨页支持（收集前后页行数据）
-     e. 写入 refs.json → 前端获取高亮区域坐标
-  4. 逐 chunk 推送到 _tasks[task_id]["chunks"]
-  5. 标记 done = True
-
-SSE consumer:
-  GET /api/chat/{task_id}/stream?offset=N
-  → 从 offset N 开始读取 chunks
-  → 长轮询等待新数据
-  → 支持多个客户端从不同 offset 同时消费
-```
-
-## PDF 引用与高亮机制
-
-- Sunny 回答中的 `[📄](/api/pdf/文件名.pdf)` 链接
-- 后端后处理：
-  1. 提取 `/api/pdf/xxx` → 确定 PDF 文件
-  2. 用 PyMuPDF 在 PDF 中搜索 chunk 文本
-  3. 找到位置 → 对称句号扩展（找上下句号）
-  4. 跨页支持 → 收集前后页行数据
-  5. 写入 `refs.json` → 前端点击 📄 获取高亮区域坐标
-- 前端渲染：content 先替换 `[📄](url)` → `<a>` 标签，再传给 marked.parse
-
-## 检索流程（search_tool.py）
-
-```
-Sunny agent → search_tool.py(query, top_k=5)
+  ▼
+sync_nature.py → 下载 PDF → journals_pdf/{Nature,NatEnergy,...}/
   │
-  ├→ POST Ollama 11435 → query vector (1024d)
-  ├→ 加载 vectors.npy (N×1024, numpy memmap)
-  ├→ 余弦相似度排序
-  ├→ 取 top_k*3 候选 → journal_rank 加权
-  ├→ 最终 top_k
-  └→ JSON 输出 {content, metadata[source, journal, rank]}
+  ▼
+pdf_text_extractor.py → PyMuPDF 双栏感知文本提取
+  │
+  ▼
+llm_chunker_v5.py → DeepSeek API 语义分块
+  │  - 排除 References / Acknowledgments
+  │  - chunk_size ~500-1500 chars
+  │
+  ▼
+update_vectors.py → Ollama mxbai-embed-large → vectors.npy
+  │
+  ▼
+data/vector_db/texts.jsonl + vectors.npy  ← 最终向量库
 ```
 
-## 启动流程（start_v4.sh）
+### 3.2 数据规模
+
+| 指标 | 数值 |
+|------|------|
+| 论文数 | 504 篇 |
+| chunks | 11,779 |
+| 向量维度 | 1024 (mxbai-embed-large) |
+| 来源 | Nature 系列 6 刊 |
+| 存储大小 | ~61 MB |
+
+### 3.3 期刊分布 & 搜索权重
+
+| 期刊 | 权重 |
+|------|------|
+| Nature | 1.5x |
+| NatEnergy | 1.4x |
+| NatMater | 1.3x |
+| NatPhoton | 1.2x |
+| NatNanotech | 1.15x |
+| NatComm | 1.05x |
+
+---
+
+## 4. 服务端架构
+
+### 4.1 API 路由
 
 ```
-1. 清理旧进程：pkill ollama serve/runner
-2. 启动 Ollama 11435（mxbai-embed-large, GPU 1）
-3. 等待嵌入模型就绪（最长 15s）
-4. 清理端口 8001（sudo fuser -k）
-5. 启动 V4 server
-6. 最终状态：
-   - Ollama 嵌入: 127.0.0.1:11435
-   - V4 Server:   localhost:8001
-   - 注意：llama3:70b (11434) 不再启动
+FastAPI (:8002)
+├── GET  /                    → web_ui.html 前端
+├── GET  /api/health          → 健康检查
+├── POST /api/chat            → 启动 Agent 任务 → {task_id, session_id}
+├── GET  /api/chat/{id}/stream → SSE 事件流 (实时推送 Agent 进度)
+├── GET  /api/chat/{id}/status → 任务状态查询
+├── POST /api/chat/{id}/cancel → 取消任务
+├── GET  /api/sessions        → 会话列表
+├── GET  /api/pdf/{file_id}   → PDF 文件服务
+├── GET  /api/pdf/{file_id}/highlights → 高亮元数据
+└── /static/pdf-reader.html   → PDF 阅读器组件
 ```
 
-## Qdrant（备用索引）
+### 4.2 请求生命周期 (chat.py)
 
-Qdrant 本地模式位于 `data/qdrant_data/`，collection 名 `perovskite_papers`（1024d, COSINE）。
-**当前未在生产中使用**——生产检索走 numpy 向量矩阵（sunny-rag/data/）。
+```
+POST /api/chat {message, session_id?}
+  │
+  ├─ 1. 中文→英文翻译 (translator.py)
+  ├─ 2. 预搜索: search_papers(query, top_k=5)
+  │      → 注入用户消息 (让 Agent 一开就看到真实的 File ID)
+  ├─ 3. 创建 TaskInfo + async 后台任务
+  ├─ 4. 同步返回 {task_id, session_id}
+  │
+  └─ 后台: run_agent_generation()
+       │
+       ├─ Agent 循环 (agent.py: run_agent_loop)
+       │   ├─ Round 1..N: LLM ↔ Tool 交替
+       │   └─ 累积 sources (PDF 寻回)
+       │
+       ├─ 后处理:
+       │   ├─ PDF 存在性验证
+       │   ├─ 高亮元数据提取 (annotator.py)
+       │   ├─ 引用幻觉校验 (正则提取 File ID → 交叉检查)
+       │   └─ 推送 sources_json 到前端
+       │
+       └─ TaskInfo.done = True
+```
 
-## 数据管道
+---
 
-### 当前状态
+## 5. Agent 循环 ★ 核心
 
-| 数据集 | chunks | 质量 | 状态 |
-|--------|--------|------|------|
-| 旧库（chunks.jsonl） | ~587k | ❌ 500字符硬截断 | 旧生产数据 |
-| 旧库（向量化后） | 188k | ⚠️ 部分清理 | 当前线上检索 |
-| 🌟 Journals 新库 | 4,573 | ✅ 语义分块 | 已分块，未向量化 |
-| arXiv 新库 | — | — | 待处理 |
+### 5.1 循环结构
 
-### 分块策略（LLM Semantic Chunking）
+```
+run_agent_loop(task_id, session_id, user_message, history)
+  │
+  ├─ 构建 messages:
+  │   [system_prompt, ...history(最近10条), user_message(含预搜索结果)]
+  │
+  ├─ for round in 1..AGENT_MAX_ROUNDS (当前=5):
+  │   │
+  │   ├─ 状态注入:
+  │   │   Round 4: "⚠️ 只剩最后一轮工具调用机会"
+  │   │   Round 5: "🚨 工具已被禁用, 必须给出完整回答"
+  │   │
+  │   ├─ LLM 调用:
+  │   │   ├─ DeepSeek: 原生 Function Calling
+  │   │   │   └─ Round 5: force_answer=True → tools=[]
+  │   │   └─ OpenClaw: 文本 <tool_call> XML 解析 (fallback)
+  │   │
+  │   ├─ 检测 tool_call:
+  │   │   ├─ 有 → 执行工具 → 结果追加到 messages → 继续
+  │   │   └─ 无 → 最终回答 → break (yield done)
+  │   │
+  │   └─ Context 压缩 (round≥2: 旧结果>500字 → 摘要)
+  │
+  └─ 上限 → yield AgentEvent.error
+```
 
-- **模型**：DeepSeek Chat API
-- **chunk 大小**：500-2000 字符
-- **Nature 系列期刊**：跳过 relevance 判断，直接分块
-- **arXiv 论文**：先判断 PSC 相关性，通过后再分块
-- **输出格式**：
-  ```json
-  {"content": "...", "metadata": {"source": "...", "journal": "...", "journal_rank": N}}
-  ```
+### 5.2 当前控制机制
 
-### PDF 源
+| 机制 | 实现方式 | 可靠性 |
+|------|---------|--------|
+| Prompt 约束 | "最多 4 次工具调用后必须回答" | ❌ LLM 经常无视 |
+| 状态注入消息 | system message 警告 | ⚠️ 部分有效 |
+| **硬关闭工具** | Round 5: `force_answer=True, tools=[]` | ✅ 100% |
+| Context 压缩 | 旧结果截断为摘要 | ✅ 防 token 爆炸 |
 
-| 源 | 路径 | 数量 |
-|----|------|------|
-| Nature 系列期刊 | `/data/data/pkb/01_raw_data/journals_pdf/` | ~511 篇 |
-| arXiv 论文 | `/data/data/pkb/01_raw_data/papers_pdf/` | ~4083 篇 |
+### 5.3 已知问题
 
-## 端口一览
+| # | 问题 | 根因 |
+|---|------|------|
+| 1 | Agent 连续搜索 4 次不读不答 | 无阶段约束，同类型工具可无限调用 |
+| 2 | 每次搜索只是微调关键词 | 无去重/覆盖率追踪 |
+| 3 | prompt "4次后必须答" 被无视 | 纯文本约束，LLM 在 function calling 模式下不遵守 |
+| 4 | 答案质量不稳定 (284 chars, 0 citations) | 最后一轮粗暴截断，Agent 被迫用搜索摘要拼凑 |
+| 5 | search_arxiv 调了 3 次才切到 search_papers | 无搜索源切换逻辑 |
 
-| 端口 | 服务 | 说明 |
-|------|------|------|
-| 8001 | V4 Server | 生产 Web UI + API |
-| 8000 | V2 Server | 旧版（可并存） |
-| 18789 | OpenClaw Gateway | Sunny agent 入口 |
-| 11435 | Ollama | mxbai-embed-large 嵌入 |
+---
 
-## 版本历史
+## 6. 工具矩阵 (当前 10 个)
 
-| 版本 | 时期 | 架构 | LLM | 检索 |
-|------|------|------|-----|------|
-| v1 | ~2025 | 朴素 RAG | 本地 | Qdrant |
-| v2 | ~2026 Q1 | Agentic RAG | llama3:70b | Qdrant + langchain |
-| **v4** | **当前** | **Sunny-RAG** | **DeepSeek API** | **numpy 检索** |
+| 工具 | 数据源 | 延迟 | 返回内容 |
+|------|--------|------|---------|
+| `search_papers` | 本地 504 篇全文 RAG | ~1s | 排名/期刊/相似度/File ID/片段 |
+| `search_arxiv` | arXiv API (16万+) | ~2s | 标题/摘要/作者/PDF链接/arXiv ID |
+| `search_semantic_scholar` | Semantic Scholar (2亿+) | ~2s | 标题/摘要/作者/期刊/年份/引用数/DOI |
+| `read_paper` | 本地 PDF → 清洗 | ~3s | 正文 (去 References/Ack 等尾部噪声) |
+| `read_arxiv_paper` | arXiv PDF 下载 → 清洗 | ~10s | 正文 (去噪声) |
+| `extract_data` | 本地 PDF → DeepSeek LLM | ~5s | PCE/Voc/Jsc/FF/结构 (JSON) |
+| `analyze_perovskite` | Pymatgen | <0.1s | 容忍因子 t / 八面体因子 μ / 晶体系统 |
+| `search_materials` | Materials Project API | ~3s | 带隙/形成能/晶体结构 (需 MP_API_KEY) |
+| `run_gaussian` | Gaussian 16 集群 | 小时级 | job_id |
+| `check_gaussian` | 本地 fs | <0.1s | 能量/偶极矩/状态 |
+
+### 工具调用优先级链
+
+```
+analyze_perovskite → search_materials → search_papers + search_arxiv + search_semantic_scholar → read_paper → run_gaussian
+  (快速筛选)         (已知DFT)          (文献发现, 三路并行)                              (深度阅读)    (精确计算)
+```
+
+---
+
+## 7. 检索服务 (retrieval.py)
+
+### 7.1 本地 RAG 管道
+
+```
+search_papers(query, top_k=5)
+  │
+  ├─ 1. 查询扩展 (_expand_queries)
+  │   ├─ 原始查询
+  │   ├─ 去停用词
+  │   ├─ 同义词替换 (stability→degradation, PCE↔efficiency...)
+  │   └─ 截短版 (长问题→前5词)
+  │
+  ├─ 2. 语义搜索 (server/v5/services/vector_search.py)
+  │   ├─ Ollama mxbai-embed-large → query vec (1024维)
+  │   ├─ NumPy cosine: vectors.npy @ query_vec
+  │   └─ 期刊加权 (Nature 1.5x → NatComm 1.05x)
+  │
+  ├─ 3. BM25 关键词搜索
+  │   ├─ 惰性构建索引 (texts.jsonl)
+  │   ├─ k1=1.2, b=0.75
+  │   └─ 融合: 0.7×语义 + 0.3×BM25
+  │
+  └─ 4. 全查询去重 → top_k
+```
+
+### 7.2 Semantic Scholar (semantic_scholar_service.py)
+
+```
+search_semantic_scholar(query, max_results=5)
+  → https://api.semanticscholar.org/graph/v1/paper/search
+  → 免费 tier: 1 req/sec (with API key)
+  → 返回: 标题/摘要/作者/期刊/年份/引用数/DOI
+
+优势: 2亿+ 论文, 覆盖 Science/ACS/Wiley/RSC 等非 Nature 期刊
+      引用数作为论文质量信号
+```
+
+### 7.3 arXiv API (arxiv_service.py)
+
+```
+search_arxiv(query, max_results=5)
+  → http://export.arxiv.org/api/query (Atom XML)
+  → 免费, 无 rate limit
+
+read_arxiv_paper(arxiv_id)
+  → https://arxiv.org/pdf/{id}.pdf
+  → pdftotext → clean_paper_text()
+
+clean_paper_text():
+  ├─ 截断: References / Bibliography / Acknowledgments /
+  │         Author Contributions / Conflict of Interest /
+  │         Supplementary / Data Availability / Funding
+  └─ 过滤: 页码行 / arXiv ID 行 / 版权行 / DOI 行
+```
+
+---
+
+## 8. 前端 (web_ui.html ~900行)
+
+### 8.1 组件
+
+```
+web_ui.html
+├─ 聊天区
+│   ├─ SSE EventSource 实时流
+│   ├─ 工具调用 badge (🔧 search_arxiv...)
+│   ├─ 引用链接 [📄](/api/pdf/xxx)
+│   └─ 参考来源面板 (sources_json)
+├─ PDF 侧边栏
+│   └─ iframe → pdf-reader.html
+│       ├─ pdf.js 渲染
+│       ├─ CSS overlay 段落级高亮
+│       └─ postMessage 选中文本 → 追问
+└─ 会话管理
+    ├─ 列表 / 切换 / 删除
+    └─ 历史持久化 (server sessions.json)
+```
+
+### 8.2 PDF 高亮链路
+
+```
+Agent 引用 File ID
+  → server 验证 PDF 存在
+    → annotator.py: chunk→page 定位 + 坐标归一化
+      → sources_json → SSE 推送
+        → 前端 pdf.js 加载 + CSS overlay 画矩形
+```
+
+---
+
+## 9. 部署
+
+```
+Python:  3.11 (.RAGenv)
+Server:  uvicorn :8002
+LLM:     DeepSeek API (deepseek-chat) / OpenClaw fallback
+Embed:   Ollama mxbai-embed-large :11435
+PDF:     pdftotext (poppler) + PyMuPDF (pipeline)
+计算:    Gaussian 16 @ 10.28.0.147
+```
+
+### 关键环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `LLM_BACKEND` | deepseek | deepseek / openclaw |
+| `DEEPSEEK_API_KEY` | - | DeepSeek API key |
+| `AGENT_MAX_ROUNDS` | 5 | Agent 最大工具调用轮数 |
+| `MP_API_KEY` | - | Materials Project (可选) |
+| `JOURNALS_PDF_DIR` | /data/data/pkb/01_raw_data/journals_pdf | Nature PDF 目录 |
+
+---
+
+## 10. 下一步
+
+| 优先级 | 任务 | 动机 |
+|--------|------|------|
+| ~~P1~~ | ~~Semantic Scholar API 接入~~ | ✅ 完成 (2026-07-10) |
+| P0 | **Agent 状态机** (PLAN→SEARCH→READ→SYNTHESIZE) | 解决 Agent 不可预测的搜索行为 |
+| P2 | 引文追踪 (forward/backward citations) | 论文发现链 |
+| P3 | 扩展本地论文库 (Science/ACS/RSC/Wiley) | 当前只覆盖 Nature 系列 |
+| P4 | 前端搜索进度可视化 | 用户可见 Agent 的搜索过程 |
+
+## 11. 变更记录
+
+| 日期 | 内容 |
+|------|------|
+| 2026-07-10 | P1: Semantic Scholar API 接入 (2亿+ 论文搜索) |
+| 2026-07-10 | P3.5: arXiv API 整合 (search_arxiv + read_arxiv_paper) |
+| 2026-07-10 | 项目清理: 消除 sunny-rag/ 历史目录, 删除 800MB 冗余 |
+| 2026-07-08 | P3: Pymatgen 材料工具整合 (analyze_perovskite + search_materials) |
+| 2026-07-02 | Phase 2: Agent Loop + DeepSeek + 前端重设计 |
+| 2026-06-28 | Phase 1: V5 模块化架构搭建 |

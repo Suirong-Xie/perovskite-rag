@@ -14,9 +14,7 @@ if _dotenv_path.exists():
 # ── 路径 ──
 BASE_DIR = Path(os.getenv("PEROVSKITE_RAG_BASE", "/data1/perovskite-rag"))
 V5_DIR = BASE_DIR / "server/v5"
-V4_DIR = BASE_DIR / "server/v4"
-SUNNY_RAG_DIR = BASE_DIR / "sunny-rag"
-DATA_DIR = SUNNY_RAG_DIR / "data"
+VECTOR_DB_DIR = BASE_DIR / "data/vector_db"
 SESSIONS_FILE = V5_DIR / "sessions.json"
 SESSIONS_DIR = V5_DIR / "sessions"
 ANNOTATED_DIR = V5_DIR / "annotated_pdfs"
@@ -45,8 +43,10 @@ DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
 # ── 检索配置 ──
-SEARCH_DATA_VERSION = os.getenv("SEARCH_DATA_VERSION", "v3")
 SEARCH_DEFAULT_TOP_K = int(os.getenv("SEARCH_DEFAULT_TOP_K", "5"))
 
+# ── Semantic Scholar ──
+S2_API_KEY = os.getenv("S2_API_KEY", "s2k-O06rEcAcYIxe89rzq7TekcIymBh6XrbMmevynf2y")
+
 # ── Agent 配置 ──
-AGENT_MAX_ROUNDS = int(os.getenv("AGENT_MAX_ROUNDS", "7"))
+AGENT_MAX_ROUNDS = int(os.getenv("AGENT_MAX_ROUNDS", "5"))

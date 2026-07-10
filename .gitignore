@@ -8,6 +8,7 @@ venv/
 *.npz
 *.h5
 *.hdf5
+data/vector_db/
 sunny-rag/data*/vectors.npy
 sunny-rag/data*/texts.jsonl
 sunny-rag/data*/id_to_index.json

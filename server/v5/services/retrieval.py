@@ -14,29 +14,11 @@ import math
 from pathlib import Path
 from typing import Optional
 from collections import defaultdict
-from ..core.config import SUNNY_RAG_DIR, SEARCH_DATA_VERSION, SEARCH_DEFAULT_TOP_K
+from ..core.config import VECTOR_DB_DIR, SEARCH_DEFAULT_TOP_K
+from . import vector_search
 
-
-# 将 sunny-rag/scripts/ 加入 sys.path
-_SEARCH_SCRIPTS_DIR = str(SUNNY_RAG_DIR / "scripts")
-if _SEARCH_SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SEARCH_SCRIPTS_DIR)
-
-_search_module = None
-
-
-def _get_search_module():
-    global _search_module
-    if _search_module is None:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "search_tool",
-            SUNNY_RAG_DIR / "scripts" / "search_tool.py",
-        )
-        _search_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(_search_module)
-    return _search_module
-
+# 初始化向量检索
+vector_search.init(str(VECTOR_DB_DIR))
 
 # ── 缓存 ──
 _cache: dict = {}
@@ -57,7 +39,7 @@ def _build_bm25():
     if _bm25_index is not None:
         return _bm25_index
 
-    data_dir = SUNNY_RAG_DIR / f"data_{SEARCH_DATA_VERSION}"
+    data_dir = VECTOR_DB_DIR
     txt_path = data_dir / "texts.jsonl"
     if not txt_path.exists():
         _bm25_index = {"texts": [], "doc_freqs": {}, "avg_dl": 0, "N": 0}
@@ -294,7 +276,7 @@ def _merge_results(semantic_results: list[dict], bm25_results: list[dict],
 
 # ── 主搜索接口 ──
 
-def search_papers(query: str, top_k: int = None, data_version: str = None,
+def search_papers(query: str, top_k: int = None,
                   clear_cache: bool = False, expand: bool = True,
                   hybrid: bool = True,
                   journal_filter: str = None,
@@ -317,13 +299,11 @@ def search_papers(query: str, top_k: int = None, data_version: str = None,
         _cache.clear()
 
     top_k = top_k or SEARCH_DEFAULT_TOP_K
-    data_version = data_version or SEARCH_DATA_VERSION
 
-    cache_key = f"{query}:{top_k}:{data_version}:{expand}:{hybrid}"
+    cache_key = f"{query}:{top_k}:{expand}:{hybrid}"
     if cache_key in _cache:
         return _cache[cache_key]
 
-    module = _get_search_module()
     start = time.time()
     all_results = []
 
@@ -331,8 +311,8 @@ def search_papers(query: str, top_k: int = None, data_version: str = None,
     log_detail = "expanded" if len(queries) > 1 else "single"
 
     for q in queries:
-        sem_results = module.search(q, top_k=max(top_k * 2, 10),
-                                    journal_boost=True, data_version=data_version)
+        sem_results = vector_search.search(q, top_k=max(top_k * 2, 10),
+                                          journal_boost=True)
 
         if hybrid:
             bm25_results = _bm25_search(q, top_k=top_k * 2)

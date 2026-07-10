@@ -25,8 +25,8 @@ def _get_idf():
     global _idf_cache
     if _idf_cache is not None:
         return _idf_cache
-    from ..core.config import SUNNY_RAG_DIR, SEARCH_DATA_VERSION
-    data_dir = SUNNY_RAG_DIR / f"data_{SEARCH_DATA_VERSION}"
+    from ..core.config import VECTOR_DB_DIR
+    data_dir = VECTOR_DB_DIR
     txt_path = data_dir / "texts.jsonl"
     if not txt_path.exists():
         _idf_cache = {}
