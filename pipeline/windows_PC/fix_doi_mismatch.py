@@ -33,18 +33,21 @@ UNMATCHED_DIR = "./unmatched"
 MISSING_FILE = "./missing_non_wiley.jsonl"
 
 # DOI 正则: 匹配 10.xxxx/xxxxx... 格式
-DOI_PATTERN = re.compile(r'\b(10\.\d{4,}/[^\s()\[\]<>"]+)', re.IGNORECASE)
+DOI_PATTERN = re.compile(r'\b(10\.\d{4,}/[a-zA-Z0-9.\-/_]+)', re.IGNORECASE)
 # 去掉末尾的标点 (DOI 不应该以 . , ; 结尾)
 DOI_CLEAN = re.compile(r'[.,;:]+$')
 
 
 def normalize_doi(doi: str) -> str:
-    """规范化 DOI 用于比较: 小写, 统一分隔符。
+    """规范化 DOI 用于比较: 小写, 统一分隔符, 去除连字符。
 
     safe_filename 把 / \\ : 全替换成 _, 逆向无法区分。
-    所以两边都转成同一个形式再比较: 全部 -> 小写, / \\ : -> _
+    pdftotext/pypdf 可能丢失 ISSN 中间的连字符 (1361-651X → 1361651X)。
+    连字符不影响 DOI 唯一性, 比较时去除。
     """
-    return doi.strip().lower().replace("/", "_").replace("\\", "_").replace(":", "_")
+    return (doi.strip().lower()
+            .replace("/", "_").replace("\\", "_").replace(":", "_")
+            .replace("-", ""))
 
 
 def doi_from_filename(filename: str) -> str:
@@ -214,15 +217,39 @@ def extract_doi_from_text(text: str, search_last_page: bool = False) -> str | No
     """从文本中提取文章自身的 DOI (非参考文献中的 DOI)。
 
     策略:
-      1. "DOI:" 标签: 只在前 1/3 搜 (标题区) 或只在后 1/5 搜 (末页区, Science 等)
-         避免中间页的 reference 区
-      2. 前 1/3 范围的裸 DOI (无标签)
+      1. "DOI:" 标签: 前 1/4 (标题/页眉区) → 安全优先
+      1b. DOI 标注: 全文本 (匹配 "DOI: 10.xxx/..." 或 "https://doi.org/10.xxx/...")
+      2. 前 1/3 范围的裸 DOI (无标签/URL)
       3. 兜底: 全文取第一个
     """
     if not text:
         return None
 
-    doi_label = re.compile(r'DOI\s*[：:]\s*(10\.\d{4,}/[^\s]+)', re.IGNORECASE)
+    # ── 预处理: 拼接被换行截断的 DOI ──
+    # PDF 页眉/页脚中 DOI 常跨行: "10.1088/1674-4926/\n43/5/052201"
+    text = re.sub(r'/\s*\n\s*(\w)', r'/\1', text)
+    text = re.sub(r'(10\.\d{4,}/\S{2,})/\s*\n\s*(\w)', r'\1/\2', text)
+    # pypdf 在连字符后截断: "10.1088/1361-\n651X/ae8043"
+    text = re.sub(r'(10\.\d{4,}/\S*?)-(\s*\n\s*)(\d)', r'\1-\3', text)
+
+    # ── 预处理: 消除 pypdf 在 DOI 中插入的空格 ──
+    # pypdf 因 PDF kerning 常在 DOI 数字间插空格: "1361 -6633" "1088/ 1361"
+    text = re.sub(r'(\d)\s+(-)', r'\1\2', text)       # "1361 -6633" → "1361-6633"
+    text = re.sub(r'(/)\s+(\d)', r'\1\2', text)        # "1088/ 1361" → "1088/1361"
+    text = re.sub(r'(\d)\s+(\d)', r'\1\2', text)        # "10.137 1" → "10.1371"
+    # PLOS ONE 等期刊中 "https://doi.or g" → "https://doi.org"
+    text = re.sub(r'\bdoi\s*\.\s*o\s*r\s*g\s*/\s*', 'doi.org/', text)
+
+    # ── 预处理: DOI 字符串中残留空格一次性清除 ──
+    # pypdf 可能把 DOI 拆得粉碎: "journal.po ne.03132 66" → "journal.pone.0313266"
+    # 只在 DOI 上下文 (10.XXXX/ 之后) 合并, 遇到大写字母自动停止
+    text = re.sub(
+        r'\b(10\.\d{4,}/[a-z0-9.\-/]*(?:\s+[a-z0-9.\-/]+)*)',
+        lambda m: m.group(0).replace(' ', ''),
+        text,
+    )
+
+    doi_label = re.compile(r'DOI\s*[：:]\s*(10\.\d{4,}/[a-zA-Z0-9.\-/_]+)', re.IGNORECASE)
 
     if search_last_page:
         # 只在末尾 20% 搜 (末页区, Science 的 DOI 在这)
@@ -236,6 +263,19 @@ def extract_doi_from_text(text: str, search_last_page: bool = False) -> str | No
     # ── 策略 1: "DOI:" 标签 — 只在前 1/4 (标题/页眉区) ──
     first_quarter = len(text) // 4
     m = doi_label.search(text[:first_quarter])
+    if m:
+        doi = DOI_CLEAN.sub('', m.group(1))
+        if len(doi) >= 15:
+            return doi
+
+    # ── 策略 1b: DOI 标注 — 全文本搜 (IOP 页眉用 https://doi.org/10.xxx/...) ──
+    # 匹配: "DOI: 10.xxx/..." 或 "https://doi.org/10.xxx/..."
+    # 参考文献中极少出现完整 doi.org URL, 全量搜安全
+    doi_annotated = re.compile(
+        r'(?:DOI\s*[：:]\s*|https?://doi\.org/|Digital\s+Object\s+Identifier\s+)\s*(10\.\d{4,}/[a-zA-Z0-9.\-/_]+)',
+        re.IGNORECASE,
+    )
+    m = doi_annotated.search(text)
     if m:
         doi = DOI_CLEAN.sub('', m.group(1))
         if len(doi) >= 15:
@@ -343,6 +383,14 @@ def main():
                 continue
 
             stats["doi_found"] += 1
+
+            # DOI 可能粘了 ISSN/版权文字, 从尾部逐字符裁剪重试
+            if real_doi.lower() not in paper_index:
+                for trim_len in range(len(real_doi) - 1, 14, -1):
+                    candidate = real_doi[:trim_len].rstrip('./-')
+                    if candidate.lower() in paper_index:
+                        real_doi = candidate
+                        break
 
             if normalize_doi(real_doi) == normalize_doi(filename_doi):
                 stats["doi_match"] += 1
