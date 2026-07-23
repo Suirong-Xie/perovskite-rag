@@ -99,6 +99,13 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
                     f"{len(raw_results)} new, total {len(seen_sources)} unique")
             elif event.type == "done":
                 break
+            elif event.type == "state":
+                # 状态机状态切换事件 — 更新 TaskInfo 并推送前端
+                async with _tasks_lock:
+                    _tasks[task_id].agent_state = event.data
+                log(f"TASK {task_id} STATE: {event.data.get('current_state', '?')} "
+                    f"(papers: {event.data.get('papers_found', 0)}, "
+                    f"read: {event.data.get('papers_read', 0)})")
             elif event.type == "error":
                 log(f"TASK {task_id} agent error: {event.data['message']}")
                 async with _tasks_lock:
@@ -379,6 +386,7 @@ async def task_status(task_id: str):
             "done": t.done,
             "error": t.error,
             "total_chars": sum(len(c) for c in t.chunks),
+            "agent_state": t.agent_state,
         }
 
 

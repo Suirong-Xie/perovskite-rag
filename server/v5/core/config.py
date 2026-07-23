@@ -48,5 +48,22 @@ SEARCH_DEFAULT_TOP_K = int(os.getenv("SEARCH_DEFAULT_TOP_K", "5"))
 # ── Semantic Scholar ──
 S2_API_KEY = os.getenv("S2_API_KEY", "s2k-O06rEcAcYIxe89rzq7TekcIymBh6XrbMmevynf2y")
 
+# ── S2 向量库 (Phase 3.5-4) ──
+S2_VECTOR_DB_DIR = BASE_DIR / "data/s2_vector_db"
+S2_CORPUS_DIR = BASE_DIR / "data/s2_corpus"
+S2_ENABLED = os.path.isdir(S2_VECTOR_DB_DIR) and os.path.isfile(S2_VECTOR_DB_DIR / "vectors.npy")
+S2_RESULT_WEIGHT = float(os.getenv("S2_RESULT_WEIGHT", "0.85"))
+S2_CITATION_BOOST_FACTOR = float(os.getenv("S2_CITATION_BOOST_FACTOR", "0.1"))
+
 # ── Agent 配置 ──
-AGENT_MAX_ROUNDS = int(os.getenv("AGENT_MAX_ROUNDS", "5"))
+AGENT_MAX_ROUNDS = int(os.getenv("AGENT_MAX_ROUNDS", "10"))  # 安全阀，状态机下不太会触达
+
+# Agent 状态机预算
+AGENT_STATE_BUDGETS = {
+    "retrieve_llm": int(os.getenv("AGENT_RETRIEVE_LLM", "2")),     # RETRIEVE 阶段最多 LLM 调用
+    "retrieve_search": int(os.getenv("AGENT_RETRIEVE_SEARCH", "3")), # RETRIEVE 阶段最多搜索次数
+    "read_papers": int(os.getenv("AGENT_READ_PAPERS", "3")),         # READ 阶段最多阅读篇数
+}
+
+# RETRIEVE → READ 最少相关论文数
+AGENT_MIN_RELEVANT_PAPERS = int(os.getenv("AGENT_MIN_RELEVANT_PAPERS", "5"))

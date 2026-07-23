@@ -30,163 +30,44 @@ from ..core.config import AGENT_MAX_ROUNDS, PAPERS_DIR, JOURNALS_PDF_DIR, LLM_BA
 from ..core.schemas import AgentEvent, ToolCall, ToolResult
 from ..core.llm import chat_completion_stream, chat_completion_with_tools
 from .retrieval import search_papers
+from .tools import ALL_TOOLS, EXECUTORS as TOOL_EXECUTORS, RETRIEVE_TOOLS, READ_TOOLS, filter_tools
+from .tools.paper_utils import find_pdf_path, find_pdf_fast, JOURNAL_DIR_MAP
+
+# PyMuPDF4LLM 可选依赖（read_paper 优先使用）
+try:
+    import pymupdf4llm  # noqa: F401
+    _HAS_PYMUPDF4LLM = True
+except ImportError:
+    _HAS_PYMUPDF4LLM = False
+
+# 复用 chunking 管线的 markdown 清洗函数
+_clean_md = None
+
+
+def _get_clean_md():
+    global _clean_md
+    if _clean_md is None:
+        import sys
+        _pipeline = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'pipeline')
+        if _pipeline not in sys.path:
+            sys.path.insert(0, _pipeline)
+        from s2_chunk_and_embed import clean_markdown_text
+        _clean_md = clean_markdown_text
+    return _clean_md
 from .gaussian_service import submit_job, check_job
 from .materials_service import analyze_perovskite, search_materials_project
 from .arxiv_service import search_arxiv, download_arxiv_pdf, clean_paper_text
 from .semantic_scholar_service import search_semantic_scholar
 
-# ── 工具定义 ──
+# ── 工具定义 (从 tools/ 包导入) ──
 
-TOOLS = [
-    {
-        "name": "search_papers",
-        "description": (
-            "Search the perovskite solar cell research paper database for papers "
-            "matching a scientific query. Returns ranked results with journal name, "
-            "source filename, and content snippets. Use this to find relevant papers "
-            "before answering."
-        ),
-        "parameters": {
-            "query": "English search query string (e.g., 'inverted perovskite solar cell stability')",
-            "top_k": "Number of results to return (default 5, max 10)",
-        },
-    },
-    {
-        "name": "read_paper",
-        "description": (
-            "Read the full text of a specific paper given its source filename. "
-            "Use this when search results are insufficient and you need to read "
-            "a paper in detail. Source filenames look like 'Nature_2021_s41467-021-26121-1.pdf'."
-        ),
-        "parameters": {
-            "source": "Paper source filename from search results (e.g., 'Nature_2021_xxx.pdf')",
-        },
-    },
-    {
-        "name": "run_gaussian",
-        "description": (
-            "Submit a DFT calculation using Gaussian 16 on the local cluster "
-            "(384 cores, 377GB RAM). Supports geometry optimization, single point "
-            "energy, dipole moment, frequency analysis. Use for computing molecular "
-            "properties of SAM molecules, perovskite fragments, or interface models."
-        ),
-        "parameters": {
-            "molecule_name": "Short identifier (e.g., 'MeO-2PACz')",
-            "charge": "Net charge (integer, e.g., 0 for neutral)",
-            "multiplicity": "Spin multiplicity (1=singlet, 2=doublet, 3=triplet)",
-            "coordinates": "XYZ format coordinates (element symbols + x y z per line)",
-            "method": "DFT functional (default: B3LYP, options: PBE0, M06-2X, wB97XD)",
-            "basis": "Basis set (default: 6-31G(d), options: 6-31+G(d,p), def2SVP, LANL2DZ)",
-            "job_type": "Calculation type (default: 'opt freq', options: 'sp' for single point)",
-        },
-    },
-    {
-        "name": "check_gaussian",
-        "description": (
-            "Check the status of a submitted Gaussian calculation. Returns whether "
-            "the job is running, done, or failed, along with extracted results "
-            "(energy in Hartree, dipole moment in Debye) if available."
-        ),
-        "parameters": {
-            "job_id": "The job ID returned by run_gaussian",
-        },
-    },
-    {
-        "name": "extract_data",
-        "description": (
-            "Extract structured performance data from a perovskite solar cell paper. "
-            "Returns key metrics: PCE (power conversion efficiency), Voc, Jsc, FF, "
-            "device architecture (n-i-p or p-i-n), perovskite composition, "
-            "and stability test results if available."
-        ),
-        "parameters": {
-            "source": "Paper source filename (e.g., 'Nature_2021_xxx.pdf')",
-        },
-    },
-    {
-        "name": "search_arxiv",
-        "description": (
-            "Search arXiv for perovskite solar cell preprints. Returns titles, "
-            "abstracts, authors, publication dates, and PDF download links. "
-            "arXiv has 160,000+ perovskite-related preprints, often covering "
-            "the latest research (2024-2026) before journal publication. "
-            "Use this alongside search_papers to find recent work not yet in "
-            "the local database."
-        ),
-        "parameters": {
-            "query": "English search query (e.g., 'inverted perovskite stability 2024')",
-            "max_results": "Number of results to return (default 5, max 10)",
-        },
-    },
-    {
-        "name": "read_arxiv_paper",
-        "description": (
-            "Download and read the full text of an arXiv paper given its arXiv ID "
-            "(e.g., '2606.13414' or '2606.13414v1'). Downloads the PDF from arXiv, "
-            "extracts text, and automatically strips references, acknowledgments, "
-            "and other non-content sections. Use this to deeply read a paper found "
-            "via search_arxiv when the abstract alone is insufficient."
-        ),
-        "parameters": {
-            "arxiv_id": "ArXiv paper ID from search_arxiv results (e.g., '2606.13414')",
-        },
-    },
-    {
-        "name": "search_semantic_scholar",
-        "description": (
-            "Search Semantic Scholar, a massive academic database covering 200M+ "
-            "published papers across all scientific disciplines. Returns titles, "
-            "abstracts, authors, journal/venue, publication year, and citation "
-            "counts. Citation count is a strong quality signal — highly-cited "
-            "papers are usually landmark works. "
-            "Use this for: discovering papers beyond our local Nature collection, "
-            "finding the most influential papers on a topic (sort by citations), "
-            "or searching for papers from non-Nature journals (Science, ACS, "
-            "Wiley, RSC, etc.). "
-            "Complements search_papers (local full-text) and search_arxiv (preprints)."
-        ),
-        "parameters": {
-            "query": "English search query (e.g., 'perovskite stability under humidity')",
-            "max_results": "Number of results (default 5, max 10)",
-            "year_min": "Optional: earliest publication year (e.g., 2022)",
-            "year_max": "Optional: latest publication year (e.g., 2026)",
-        },
-    },
-    {
-        "name": "analyze_perovskite",
-        "description": (
-            "Analyze a perovskite crystal structure using Pymatgen. "
-            "Given a chemical formula (e.g., 'MAPbI3', 'Cs0.1FA0.9PbI3', 'CsSnI3'), "
-            "computes the Goldschmidt tolerance factor, octahedral factor, and predicts "
-            "the crystal system and structural stability. "
-            "Use this to quickly assess whether a proposed perovskite composition "
-            "is structurally viable before doing DFT or searching papers."
-        ),
-        "parameters": {
-            "formula": "Perovskite chemical formula, ABX3 type (e.g., 'MAPbI3', 'Cs0.2FA0.8PbBr3')",
-        },
-    },
-    {
-        "name": "search_materials",
-        "description": (
-            "Search the Materials Project database (140k+ inorganic materials computed "
-            "with DFT) for known data on a chemical formula. Returns bandgap, "
-            "formation energy, crystal structure (cubic/tetragonal/orthorhombic), "
-            "and previous experimental or computational data. "
-            "Use this to check what is already known about a composition before "
-            "running your own calculations."
-        ),
-        "parameters": {
-            "formula": "Chemical formula to search (e.g., 'PbTiO3', 'CsPbI3')",
-        },
-    },
-]
+TOOLS = ALL_TOOLS
 
 # ── Agent 系统 prompt ──
 
 AGENT_SYSTEM_PROMPT = """你是 Sunny，钙钛矿太阳能电池领域的 AI 研究助手。
 你是一个具备文献检索能力的科研 Agent，你的知识来源包括：
-  1. 本地论文数据库（Nature 系列期刊，504 篇全文）
+  1. 本地论文数据库（Nature 系列 500+ 篇全文 + S2 10,000+ 篇全文/摘要，覆盖 50+ 期刊）
   2. arXiv 预印本（16 万+ 钙钛矿论文，含最新研究）
   3. Semantic Scholar（2 亿+ 已发表论文，全学科，含引用数）
   4. Materials Project DFT 数据库（14 万+ 无机材料）
@@ -286,7 +167,7 @@ AGENT_SYSTEM_PROMPT = """你是 Sunny，钙钛矿太阳能电池领域的 AI 研
 
 ## 文献搜索工具使用指南
 
-- **search_papers**: 搜索本地 Nature 期刊全文数据库（504 篇）。论文内容已向量化，适合语义搜索和深度阅读
+- **search_papers**: 搜索本地论文数据库（Nature + S2 全文/摘要，10,000+ 篇）。论文内容已向量化，适合语义搜索和深度阅读
 - **search_arxiv**: 搜索 arXiv 预印本（16 万+ 钙钛矿论文）。覆盖最新研究（2024-2026），返回摘要和 PDF 链接。适合找前沿/未发表工作
 - **search_semantic_scholar**: 搜索 Semantic Scholar（2 亿+ 已发表论文）。覆盖 Science/ACS/Wiley/RSC 等非 Nature 期刊。返回引用数（质量信号）、DOI、摘要。适合：发现高影响力论文、找非 Nature 期刊的工作、按年份过滤
 - **read_paper**: 阅读本地论文全文（已自动清洗参考文献/致谢/作者贡献等尾部噪声）
@@ -396,430 +277,6 @@ def find_pdf_fast(source: str, journal_name: str = "") -> Optional[str]:
         for journal_dir in JOURNALS_PDF_DIR.iterdir():
             if not journal_dir.is_dir():
                 continue
-            if journal_dir.name == journal_dir_name:
-                continue  # already checked above
-            pdf_file = journal_dir / source
-            if pdf_file.exists():
-                return str(pdf_file)
-    # 3. papers_pdf/{year}/{month}/{source} — 旧 arXiv 数据
-    for year_dir in sorted(PAPERS_DIR.iterdir()):
-        if not year_dir.is_dir() or not year_dir.name.isdigit():
-            continue
-        for month_dir in sorted(year_dir.iterdir()):
-            if not month_dir.is_dir():
-                continue
-            pdf_file = month_dir / source
-            if pdf_file.exists():
-                return str(pdf_file)
-    return None
-
-
-def find_pdf_path(source: str) -> Optional[str]:
-    """按 source 文件名查找 PDF（兼容旧接口，内部委托给 find_pdf_fast）"""
-    return find_pdf_fast(source)
-
-
-def execute_search_tool(arguments: dict) -> tuple:
-    """执行 search_papers 工具。
-    Returns:
-        (ToolResult, raw_results) — raw_results 是原始搜索结果列表，
-        供上层（chat.py）累积到 TaskInfo.sources 用于 PDF 寻回和高亮。
-    """
-    query = arguments.get("query", "")
-    top_k = min(int(arguments.get("top_k", 5)), 10)
-    if not query:
-        return (ToolResult(
-            ToolCall("search_papers", arguments),
-            "", error="query is required"
-        ), [])
-
-    results = search_papers(query, top_k=top_k)
-    if not results:
-        return (ToolResult(
-            ToolCall("search_papers", arguments),
-            "No results found for this query.",
-        ), [])
-
-    # 格式化结果为紧凑但信息丰富的文本
-    output_lines = [f"Found {len(results)} results for '{query}':\n"]
-    for i, r in enumerate(results):
-        file_id = r.get("source", "").replace(".pdf", "")
-        output_lines.append(
-            f"[{i+1}] {r.get('journal_name', 'Unknown')} | "
-            f"Similarity: {r.get('similarity', 0):.3f} | "
-            f"Source: {r.get('source', 'N/A')} | "
-            f"File ID: {file_id}\n"
-            f"    Content: {r.get('content', '')[:600]}"
-        )
-    return (ToolResult(
-        ToolCall("search_papers", arguments),
-        "\n".join(output_lines),
-    ), results)
-
-
-def execute_read_tool(arguments: dict) -> tuple:
-    """执行 read_paper 工具。
-    Returns:
-        (ToolResult, raw_info) — raw_info 是包含 source/journal 的 dict，
-        供上层累积到 TaskInfo.sources。
-    """
-    source = arguments.get("source", "")
-    if not source:
-        return (ToolResult(
-            ToolCall("read_paper", arguments),
-            "", error="source is required"
-        ), {})
-
-    pdf_path = find_pdf_path(source)
-    if not pdf_path:
-        return (ToolResult(
-            ToolCall("read_paper", arguments),
-            f"PDF not found for source: {source}",
-        ), {})
-
-    try:
-        proc = subprocess.run(
-            ["pdftotext", pdf_path, "-"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if proc.returncode != 0:
-            return (ToolResult(
-                ToolCall("read_paper", arguments),
-                "", error=f"pdftotext error: {proc.stderr[:200]}"
-            ), {})
-
-        raw_text = proc.stdout
-        # 清洗：去参考文献、致谢、页眉页脚
-        cleaned = clean_paper_text(raw_text)
-        content = cleaned[:5000]  # 限制长度
-
-        if len(cleaned) < len(raw_text) * 0.5:
-            # 清洗太激进，退回原始文本
-            content = raw_text[:5000]
-
-        return (ToolResult(
-            ToolCall("read_paper", arguments),
-            f"Content of {source} (cleaned, first 5000 chars):\n\n{content}",
-        ), {"source": source, "content": content[:600]})
-    except subprocess.TimeoutExpired:
-        return (ToolResult(
-            ToolCall("read_paper", arguments),
-            "", error="pdftotext timed out after 30s"
-        ), {})
-    except Exception as e:
-        return (ToolResult(
-            ToolCall("read_paper", arguments),
-            "", error=str(e)
-        ), {})
-
-
-def execute_search_arxiv_tool(arguments: dict) -> tuple:
-    """执行 search_arxiv 工具。"""
-    query = arguments.get("query", "")
-    max_results = min(int(arguments.get("max_results", 5)), 10)
-    if not query:
-        return (ToolResult(
-            ToolCall("search_arxiv", arguments),
-            "", error="query is required"
-        ), [])
-
-    results = search_arxiv(query, max_results=max_results)
-    if not results:
-        return (ToolResult(
-            ToolCall("search_arxiv", arguments),
-            "No results found on arXiv for this query.",
-        ), [])
-
-    output_lines = [f"Found {len(results)} arXiv papers for '{query}':\n"]
-    for i, r in enumerate(results):
-        authors_str = ", ".join(r.get("authors", [])[:3])
-        if len(r.get("authors", [])) > 3:
-            authors_str += " et al."
-        output_lines.append(
-            f"[{i+1}] {r.get('title', 'N/A')}\n"
-            f"    Authors: {authors_str}\n"
-            f"    Published: {r.get('published', 'N/A')}\n"
-            f"    arXiv ID: {r.get('arxiv_id', 'N/A')}\n"
-            f"    PDF: {r.get('pdf_url', 'N/A')}\n"
-            f"    Category: {r.get('category', 'N/A')}\n"
-            f"    Abstract: {r.get('summary', '')[:500]}"
-        )
-    return (ToolResult(
-        ToolCall("search_arxiv", arguments),
-        "\n".join(output_lines),
-    ), results)
-
-
-def execute_read_arxiv_tool(arguments: dict) -> tuple:
-    """执行 read_arxiv_paper 工具。"""
-    arxiv_id = arguments.get("arxiv_id", "")
-    if not arxiv_id:
-        return (ToolResult(
-            ToolCall("read_arxiv_paper", arguments),
-            "", error="arxiv_id is required"
-        ), {})
-
-    pdf_path = download_arxiv_pdf(arxiv_id)
-    if not pdf_path:
-        return (ToolResult(
-            ToolCall("read_arxiv_paper", arguments),
-            f"Failed to download PDF for arXiv:{arxiv_id}",
-        ), {})
-
-    try:
-        proc = subprocess.run(
-            ["pdftotext", pdf_path, "-"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if proc.returncode != 0:
-            return (ToolResult(
-                ToolCall("read_arxiv_paper", arguments),
-                "", error=f"pdftotext error: {proc.stderr[:200]}"
-            ), {})
-
-        cleaned = clean_paper_text(proc.stdout)
-        content = cleaned[:5000]
-
-        # 构建引用信息
-        source = f"arXiv:{arxiv_id}"
-        return (ToolResult(
-            ToolCall("read_arxiv_paper", arguments),
-            f"Content of arXiv:{arxiv_id} (cleaned, first 5000 chars):\n\n{content}",
-        ), {"source": source, "content": content[:600]})
-    except subprocess.TimeoutExpired:
-        return (ToolResult(
-            ToolCall("read_arxiv_paper", arguments),
-            "", error="pdftotext timed out after 30s"
-        ), {})
-    except Exception as e:
-        return (ToolResult(
-            ToolCall("read_arxiv_paper", arguments),
-            "", error=str(e)
-        ), {})
-    finally:
-        # 清理临时文件
-        try:
-            os.unlink(pdf_path)
-        except Exception:
-            pass
-
-
-def execute_semantic_scholar_tool(arguments: dict) -> tuple:
-    """执行 search_semantic_scholar 工具。"""
-    query = arguments.get("query", "")
-    max_results = min(int(arguments.get("max_results", 5)), 10)
-    year_min = arguments.get("year_min")
-    year_max = arguments.get("year_max")
-
-    if year_min:
-        try:
-            year_min = int(year_min)
-        except (ValueError, TypeError):
-            year_min = None
-    if year_max:
-        try:
-            year_max = int(year_max)
-        except (ValueError, TypeError):
-            year_max = None
-
-    if not query:
-        return (ToolResult(
-            ToolCall("search_semantic_scholar", arguments),
-            "", error="query is required"
-        ), [])
-
-    results = search_semantic_scholar(
-        query, max_results=max_results,
-        year_min=year_min, year_max=year_max,
-    )
-    if not results:
-        return (ToolResult(
-            ToolCall("search_semantic_scholar", arguments),
-            "No results found on Semantic Scholar for this query.",
-        ), [])
-
-    output_lines = [f"Found {len(results)} papers on Semantic Scholar for '{query}':\n"]
-    for i, r in enumerate(results):
-        authors_str = ", ".join(r.get("authors", [])[:3])
-        if len(r.get("authors", [])) > 3:
-            authors_str += " et al."
-        year_citations = f"{r.get('year', 'N/A')} · {r.get('citationCount', 0)} citations"
-        output_lines.append(
-            f"[{i+1}] {r.get('title', 'N/A')}\n"
-            f"    Authors: {authors_str}\n"
-            f"    Venue: {r.get('venue', 'N/A')} · {year_citations}\n"
-            f"    DOI: {r.get('doi', 'N/A')}\n"
-            f"    Abstract: {r.get('abstract', '(abstract not available)')[:500]}"
-        )
-    return (ToolResult(
-        ToolCall("search_semantic_scholar", arguments),
-        "\n".join(output_lines),
-    ), results)
-
-
-# ── Skill 注册表 ──
-# 添加新 skill: TOOL_EXECUTORS["name"] = executor_function
-# 每个 executor 返回 (ToolResult, raw_data) 元组
-def execute_gaussian_tool(arguments: dict) -> tuple:
-    """执行 run_gaussian 工具。"""
-    try:
-        result = submit_job(
-            molecule_name=arguments.get("molecule_name", "molecule"),
-            charge=int(arguments.get("charge", 0)),
-            multiplicity=int(arguments.get("multiplicity", 1)),
-            coordinates=arguments.get("coordinates", ""),
-            method=arguments.get("method", "B3LYP"),
-            basis=arguments.get("basis", "6-31G(d)"),
-            job_type=arguments.get("job_type", "opt freq"),
-        )
-        output = (
-            f"Gaussian job submitted.\n"
-            f"  Job ID: {result['job_id']}\n"
-            f"  Molecule: {result['molecule']}\n"
-            f"  Method: {result['method']}/{result['basis']}\n"
-            f"  Type: {result['job_type']}\n"
-            f"Use check_gaussian with this job_id to check status and get results."
-        )
-        return (ToolResult(ToolCall("run_gaussian", arguments), output), None)
-    except Exception as e:
-        return (ToolResult(ToolCall("run_gaussian", arguments), "", error=str(e)), None)
-
-
-def execute_check_gaussian_tool(arguments: dict) -> tuple:
-    """执行 check_gaussian 工具。"""
-    job_id = arguments.get("job_id", "")
-    if not job_id:
-        return (ToolResult(ToolCall("check_gaussian", arguments), "", error="job_id is required"), None)
-
-    result = check_job(job_id)
-    lines = [f"Job {job_id}: {result['status']}"]
-    if result.get("energy_hartree"):
-        lines.append(f"  Energy: {result['energy_hartree']:.6f} Hartree")
-    if result.get("dipole_debye") is not None:
-        lines.append(f"  Dipole: {result['dipole_debye']:.4f} Debye")
-    if result.get("wall_time"):
-        lines.append(f"  Time: {result['wall_time']}")
-    if result.get("error"):
-        lines.append(f"  Error: {result['error']}")
-
-    return (ToolResult(ToolCall("check_gaussian", arguments), "\n".join(lines)), None)
-
-
-def execute_extract_data_tool(arguments: dict) -> tuple:
-    """执行 extract_data 工具——从论文中提取结构化数据。"""
-    source = arguments.get("source", "")
-    if not source:
-        return (ToolResult(ToolCall("extract_data", arguments), "", error="source is required"), None)
-
-    pdf_path = find_pdf_path(source)
-    if not pdf_path:
-        return (ToolResult(ToolCall("extract_data", arguments), f"PDF not found: {source}", error="PDF not found"), None)
-
-    try:
-        proc = subprocess.run(
-            ["pdftotext", pdf_path, "-"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if proc.returncode != 0:
-            return (ToolResult(ToolCall("extract_data", arguments), "", error=f"pdftotext error: {proc.stderr[:200]}"), None)
-        text = proc.stdout[:10000]
-
-        # 用 LLM 提取结构化数据
-        import requests
-        from ..core.config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
-
-        resp = requests.post(
-            f"{DEEPSEEK_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": DEEPSEEK_MODEL,
-                "messages": [
-                    {"role": "system", "content": (
-                        "Extract perovskite solar cell performance data from this paper excerpt. "
-                        "Return ONLY a JSON object with these fields (use null if not found): "
-                        "pce (max power conversion efficiency %), voc (V), jsc (mA/cm²), ff (%), "
-                        "device_structure (n-i-p or p-i-n), perovskite_composition, "
-                        "stability (hours tested, conditions), key_innovation (one sentence summary)."
-                    )},
-                    {"role": "user", "content": text},
-                ],
-                "temperature": 0.1, "max_tokens": 512,
-            },
-            timeout=30,
-        )
-        content = resp.json()["choices"][0]["message"]["content"]
-        return (ToolResult(ToolCall("extract_data", arguments), content), {"source": source, "content": content[:600]})
-    except Exception as e:
-        return (ToolResult(ToolCall("extract_data", arguments), "", error=str(e)), {})
-
-
-def execute_analyze_perovskite_tool(arguments: dict) -> tuple:
-    """执行 analyze_perovskite 工具。"""
-    formula = arguments.get("formula", "")
-    if not formula:
-        return (ToolResult(ToolCall("analyze_perovskite", arguments), "", error="formula is required"), None)
-
-    try:
-        result = analyze_perovskite(formula)
-        if "error" in result:
-            return (ToolResult(ToolCall("analyze_perovskite", arguments), result["error"], error=result["error"]), None)
-
-        output_lines = [
-            f"Structure analysis for {result['formula']} ({result['reduced_formula']}):",
-            f"  A-site: {', '.join(result['A_site'])} (R_A = {result['r_A']:.4f} Å)",
-            f"  B-site: {', '.join(result['B_site'])} (R_B = {result['r_B']:.4f} Å)",
-            f"  X-site: {', '.join(result['X_site'])} (R_X = {result['r_X']:.4f} Å)",
-            f"  Goldschmidt tolerance factor t = {result['tolerance_factor']:.4f}",
-            f"  Octahedral factor μ = {result['octahedral_factor']:.4f}",
-            f"  Predicted crystal system: {result['predicted_crystal_system']}",
-            f"  Likely stable: {'YES' if result['likely_stable'] else 'NO'}",
-            f"  Issues: {'; '.join(result['issues'])}",
-        ]
-        return (ToolResult(ToolCall("analyze_perovskite", arguments), "\n".join(output_lines)), None)
-    except Exception as e:
-        return (ToolResult(ToolCall("analyze_perovskite", arguments), "", error=str(e)), None)
-
-
-def execute_search_materials_tool(arguments: dict) -> tuple:
-    """执行 search_materials 工具。"""
-    formula = arguments.get("formula", "")
-    if not formula:
-        return (ToolResult(ToolCall("search_materials", arguments), "", error="formula is required"), None)
-
-    try:
-        result = search_materials_project(formula)
-        if "error" in result:
-            return (ToolResult(ToolCall("search_materials", arguments), result["error"]), None)
-
-        if not result.get("results"):
-            return (ToolResult(ToolCall("search_materials", arguments), result.get("message", "No results")), None)
-
-        lines = [f"Materials Project results for '{result['formula']}':"]
-        lines.append(f"Source: {result.get('source', 'MP')}")
-        for r in result["results"]:
-            lines.append(
-                f"  [{r['material_id']}] {r['formula']} | "
-                f"Bandgap: {r['band_gap_eV']} eV | "
-                f"Formation energy: {r['formation_energy_eV_per_atom']} eV/atom | "
-                f"Crystal: {r['crystal_system']}"
-            )
-        return (ToolResult(ToolCall("search_materials", arguments), "\n".join(lines)), None)
-    except Exception as e:
-        return (ToolResult(ToolCall("search_materials", arguments), "", error=str(e)), None)
-
-
-TOOL_EXECUTORS: dict[str, Callable[[dict], tuple]] = {
-    "search_papers": execute_search_tool,
-    "read_paper": execute_read_tool,
-    "search_arxiv": execute_search_arxiv_tool,
-    "read_arxiv_paper": execute_read_arxiv_tool,
-    "search_semantic_scholar": execute_semantic_scholar_tool,
-    "run_gaussian": execute_gaussian_tool,
-    "check_gaussian": execute_check_gaussian_tool,
-    "extract_data": execute_extract_data_tool,
-    "analyze_perovskite": execute_analyze_perovskite_tool,
-    "search_materials": execute_search_materials_tool,
-}
 
 
 def register_tool(name: str, executor: Callable[[dict], tuple],
@@ -894,17 +351,18 @@ async def run_agent_loop(
     history: list[dict],
 ) -> AsyncGenerator[AgentEvent, None]:
     """
-    ReAct Agent 循环 — async generator。
+    Agent 循环 — 状态机驱动 (v5.1)。
 
-    每个 round:
-      1. 调用 LLM（streaming，实时推送 text chunks）
-      2. 检测 tool_call（原生 function calling 或文本 <tool_call> 解析）
-         - 有 → 执行工具，yield AgentEvent.tool_call + tool_result，进入下一轮
-         - 无 → yield AgentEvent.text，结束
+    状态机流程:
+      RETRIEVE → READ → RESPOND
+
+    每个状态有独立预算，工具失败不计入预算。
 
     Yields:
-        AgentEvent of types: thinking, tool_call, tool_result, text, done, error
+        AgentEvent of types: thinking, tool_call, tool_result, text, done, error, state
     """
+    from .agent_sm import AgentStateMachine
+
     # 构建初始消息列表
     messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}]
 
@@ -920,132 +378,53 @@ async def run_agent_loop(
     # 根据 LLM 后端选择工具调用方式
     use_native_tools = (LLM_BACKEND == "deepseek")
     if use_native_tools:
-        # 为原生 function calling 添加提示（工具通过 API tools 参数传入）
         messages[0]["content"] += (
             "\n\n你可以直接调用可用的函数（search_papers / search_arxiv / "
             "search_semantic_scholar / read_paper / read_arxiv_paper 等）来检索和"
-            "阅读文献。三路并行搜索 (本地 + arXiv + Semantic Scholar) 覆盖最广。"
-            "获得 3+ 条相关结果后立即开始回答，不要反复搜索。"
+            "阅读文献。系统会根据当前阶段自动引导你的行为。"
         )
 
-    # Agent 循环
-    for round_num in range(1, AGENT_MAX_ROUNDS + 1):
-        log(f"TASK {task_id} Round {round_num}/{AGENT_MAX_ROUNDS} "
-            f"({'native' if use_native_tools else 'text'} tools)")
-
-        # 接近上限时注入强制停止提示
-        if round_num == AGENT_MAX_ROUNDS - 1:
-            messages.append({
-                "role": "system",
-                "content": (
-                    "⚠️ 你只剩最后一轮工具调用机会。如果还需要更多信息，仅调用一次工具；"
-                    "如果你已有至少 3 条搜索结果，直接给出最终回答，不要再调用工具。"
-                ),
-            })
-        elif round_num == AGENT_MAX_ROUNDS:
-            messages.append({
-                "role": "system",
-                "content": (
-                    "🚨 这是你的最后一轮。工具已被禁用，你必须基于已获得的论文信息"
-                    "给出完整的最终回答。整理关键发现，附上引用，直接输出。"
-                ),
-            })
-
-        if use_native_tools:
-            # ── 原生 Function Calling 路径 ──
-            # 最后一轮关闭工具强制回答，倒数第二轮也收紧
-            force_answer = (round_num >= AGENT_MAX_ROUNDS)
-            gen = _run_native_round(task_id, round_num, messages, force_answer=force_answer)
-        else:
-            # ── 文本 <tool_call> 解析路径 ──
-            gen = _run_text_round(task_id, round_num, messages)
-
-        tool_call = None
-        async for event in gen:
-            if event.type == "_tool_call":
-                # 内部信号：有工具调用需要执行
-                tool_call = event.data["tool_call"]
-            else:
-                yield event
-
-        if tool_call is None:
-            # 没有工具调用 → 最终回答（done 已在 gen 中 yield）
-            return
-
-        # 执行工具
-        log(f"TASK {task_id} Round {round_num} TOOL: {tool_call.name}")
-
-        yield AgentEvent.tool_call(tool_call.name, tool_call.arguments)
-
-        result, raw_data = execute_tool(tool_call)
-        log(f"TASK {task_id} Round {round_num} TOOL RESULT: "
-            f"{tool_call.name} → {len(result.output)} chars"
-            f"{' ERROR: ' + result.error if result.error else ''}")
-
-        yield AgentEvent.tool_result(
-            tool_call.name,
-            result.output[:300] if result.output else "(empty)",
-            result.error,
-        )
-
-        # 将结构化原始数据通过 search_results 事件传出
-        if tool_call.name == "search_papers" and raw_data:
-            yield AgentEvent.search_results(raw_data)
-        elif tool_call.name == "read_paper" and raw_data:
-            yield AgentEvent.search_results([raw_data])
-
-        # 追加工具调用和结果到对话历史
-        if use_native_tools:
-            # Native tools 格式：assistant 消息含 tool_calls + tool 角色消息
-            tool_call_id = tool_call.arguments.pop("_tool_call_id", f"call_{round_num}")
-            messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": tool_call_id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.name,
-                        "arguments": json.dumps(tool_call.arguments, ensure_ascii=False),
-                    },
-                }],
-            })
-            result_content = result.output
-            if result.error:
-                result_content += f"\nError: {result.error}"
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": result_content,
-            })
-        else:
-            # Text tools 格式：assistant 消息 + system 消息
-            messages.append({
-                "role": "assistant",
-                "content": tool_call.arguments.pop("_full_response", ""),
-            })
-            result_content = f"Tool result for {tool_call.name}:\n{result.output}"
-            if result.error:
-                result_content += f"\nError: {result.error}"
-            messages.append({"role": "system", "content": result_content})
-
-        # Context 压缩：长对话时摘要旧工具结果
-        if round_num >= 2:
-            _compress_context(messages)
-
-        # 继续下一轮
-
-    # 达到最大轮数
-    log(f"TASK {task_id} Max rounds ({AGENT_MAX_ROUNDS}) reached, forcing final answer")
-    yield AgentEvent.error(
-        f"Reached maximum of {AGENT_MAX_ROUNDS} tool-calling rounds. "
-        "Please try a more specific question."
+    # ── 状态机驱动 ──
+    sm = AgentStateMachine(
+        messages=messages,
+        task_id=task_id,
+        use_native_tools=use_native_tools,
+        execute_tool_fn=_execute_tool_for_sm,
+        run_native_round_fn=_run_native_round_for_sm,
+        AGENT_SYSTEM_PROMPT=AGENT_SYSTEM_PROMPT,
     )
+
+    # 委托给状态机，直接转发所有事件
+    async for event in sm.run():
+        yield event
+
+    # 正常结束
+    yield AgentEvent.done()
+
+
+# ── 状态机适配器 ──
+
+def _execute_tool_for_sm(tool_call: ToolCall) -> tuple:
+    """适配 execute_tool 给状态机使用。"""
+    return execute_tool(tool_call)
+
+
+async def _run_native_round_for_sm(
+    task_id: str, round_label, messages: list[dict], force_answer: bool = False,
+    allowed_tools: list = None,
+) -> AsyncGenerator[AgentEvent, None]:
+    """适配 _run_native_round 给状态机使用。"""
+    round_num = 0 if isinstance(round_label, str) else round_label
+    async for event in _run_native_round(task_id, round_num, messages,
+                                          force_answer=force_answer,
+                                          allowed_tools=allowed_tools):
+        yield event
 
 
 async def _run_native_round(
     task_id: str, round_num: int, messages: list[dict],
     force_answer: bool = False,
+    allowed_tools: list = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """使用原生 Function Calling 执行一轮 LLM 调用。
     实时流式推送 text content，完成后检测 tool_calls。
@@ -1053,10 +432,16 @@ async def _run_native_round(
 
     Args:
         force_answer: 为 True 时不传 tools，强制纯文本回答
+        allowed_tools: 限制可用工具列表，None 表示使用全部 TOOLS
     """
     full_response = ""
     tool_calls = None
-    active_tools = [] if force_answer else TOOLS
+    if force_answer:
+        active_tools = []
+    elif allowed_tools is not None:
+        active_tools = allowed_tools
+    else:
+        active_tools = TOOLS
     try:
         async for event in chat_completion_with_tools(messages, active_tools):
             if event["type"] == "text":

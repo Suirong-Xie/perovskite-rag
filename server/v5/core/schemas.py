@@ -25,6 +25,8 @@ class TaskInfo:
         self.pdfs_validated: set[str] = set()
         # 验证后的 sources 列表的 JSON 字符串（Agent 完成后设置，SSE 端点推送）
         self.sources_json: Optional[str] = None
+        # Agent 状态机当前状态（供 status API 和 SSE 暴露）
+        self.agent_state: Optional[dict] = None
 
 
 class SessionSummary:
@@ -109,3 +111,8 @@ class AgentEvent:
     @classmethod
     def error(cls, message: str) -> "AgentEvent":
         return cls("error", {"message": message})
+
+    @classmethod
+    def state_change(cls, state: str, summary: dict) -> "AgentEvent":
+        """Agent 状态机状态切换事件，供前端展示进度。"""
+        return cls("state", {"current_state": state, **summary})
