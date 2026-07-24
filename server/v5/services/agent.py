@@ -311,7 +311,7 @@ async def _run_native_round(
         async for event in chat_completion_with_tools(messages, active_tools):
             if event["type"] == "text":
                 full_response += event["content"]
-                yield AgentEvent.text(event["content"])
+                # 不在此处 yield text — tool_call 前的 thinking 不应展示给用户
             elif event["type"] == "done":
                 tool_calls = event["tool_calls"]
     except Exception as e:
@@ -325,7 +325,6 @@ async def _run_native_round(
         return
 
     if tool_calls:
-        # 有工具调用：已实时推送的 text 是 thinking（chat.py 会在 tool_call 时重置）
         log(f"TASK {task_id} Round {round_num} TOOL (native): {tool_calls[0]['name']}")
 
         # 取第一个 tool_call（后续可扩展并行执行）
@@ -334,8 +333,9 @@ async def _run_native_round(
         yield AgentEvent("_tool_call", {"tool_call": ToolCall(tc["name"], tc["arguments"])})
         return
 
-    # 没有 tool_call → 最终回答（文本已在流式推送中实时发送）
+    # 没有 tool_call → 最终回答：一次性推送全文
     log(f"TASK {task_id} Round {round_num} FINAL ANSWER: {len(full_response)} chars")
+    yield AgentEvent.text(full_response)
     yield AgentEvent.done()
 
 
