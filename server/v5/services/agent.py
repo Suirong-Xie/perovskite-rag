@@ -311,7 +311,7 @@ async def _run_native_round(
         async for event in chat_completion_with_tools(messages, active_tools):
             if event["type"] == "text":
                 full_response += event["content"]
-                # 不在此处 yield text — tool_call 前的 thinking 不应展示给用户
+                yield AgentEvent.text(event["content"])
             elif event["type"] == "done":
                 tool_calls = event["tool_calls"]
     except Exception as e:
@@ -333,7 +333,7 @@ async def _run_native_round(
         yield AgentEvent("_tool_call", {"tool_call": ToolCall(tc["name"], tc["arguments"])})
         return
 
-    # 没有 tool_call → 最终回答：一次性推送全文
+    # 没有 tool_call → 最终回答
     log(f"TASK {task_id} Round {round_num} FINAL ANSWER: {len(full_response)} chars")
     yield AgentEvent.text(full_response)
     yield AgentEvent.done()

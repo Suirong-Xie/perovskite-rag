@@ -203,6 +203,27 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
                 log(f"TASK {task_id} CITATION CHECK: all {len(cited_ids)} citations valid")
 
         # 持久化：消息 + 参考来源一起写入 session 历史
+        # 过滤掉裸 <tool_calls> 残骸（Agent 未正常完成时可能残留在 full_content 中）
+        clean_content = re.sub(r'<tool_calls>.*?</tool_calls>', '', full_content, flags=re.DOTALL).strip()
+        if not clean_content or len(clean_content) < 50:
+            # Agent 未产出有效回答 → 用来源生成兜底摘要
+            if validated_sources:
+                n_primary = sum(1 for s in validated_sources if s.get("has_pdf") != False)
+                n_supp = len(validated_sources) - n_primary
+                parts = [f"已检索到 {len(validated_sources)} 篇相关文献"]
+                if n_primary:
+                    parts.append(f"{n_primary} 篇有全文")
+                if n_supp:
+                    parts.append(f"{n_supp} 篇补充参考")
+                parts.append("，请查看下方来源列表获取详细信息。")
+                full_content = "".join(parts)
+                log(f"TASK {task_id} FALLBACK: generated summary from {len(validated_sources)} sources")
+            else:
+                full_content = "抱歉，未能完成本次检索。请重试或更换关键词。"
+                log(f"TASK {task_id} FALLBACK: no sources, generic error message")
+        else:
+            full_content = clean_content
+
         if full_content:
             store.append_message(sid, "assistant", full_content, validated_sources)
 
