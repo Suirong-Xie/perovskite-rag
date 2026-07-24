@@ -211,7 +211,7 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
 
         # 持久化：消息 + 参考来源一起写入 session 历史
         # 过滤掉裸 <tool_calls> 残骸（Agent 未正常完成时可能残留在 full_content 中）
-        clean_content = re.sub(r'<tool_calls>.*?</tool_calls>', '', full_content, flags=re.DOTALL).strip()
+        clean_content = re.sub(r'<(?:anth:)?tool_calls>.*?</(?:anth:)?tool_calls>', '', full_content, flags=re.DOTALL).strip()
         if not clean_content or len(clean_content) < 50:
             # Agent 未产出有效回答 → 用来源生成兜底摘要
             if validated_sources:

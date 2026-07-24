@@ -563,7 +563,7 @@ class AgentStateMachine:
 
         if not resp_text.strip():
             return ""
-        if "<tool_call" in resp_text or "<tool_calls>" in resp_text:
+        if any(tag in resp_text for tag in ("<tool_call", "<tool_calls>", "antha:tool_call", "<｜｜DSML｜｜tool_call", "<invoke")):
             log(f"TASK {self.task_id} RESPOND {label}: text contains <tool_calls> XML, "
                 f"discarding ({len(resp_text)} chars)")
             return ""
