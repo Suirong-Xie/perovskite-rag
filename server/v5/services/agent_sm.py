@@ -331,6 +331,8 @@ class AgentStateMachine:
 
             if tool_call.name not in RETRIEVE_TOOLS:
                 log(f"TASK {self.task_id} RETRIEVE: unexpected {tool_call.name}, skip")
+                # 仍 yield tool_call 让 chat.py 清除 full_content 中的 <tool_calls> 残骸
+                yield AgentEvent.tool_call(tool_call.name, tool_call.arguments)
                 self.messages.append({
                     "role": "system",
                     "content": f"⚠️ {tool_call.name} 不在检索阶段可用。请使用: {', '.join(sorted(RETRIEVE_TOOLS))}。",
@@ -411,6 +413,8 @@ class AgentStateMachine:
             # 双重保护：API 层 + 运行时检查
             if tool_call.name not in READ_TOOLS:
                 log(f"TASK {self.task_id} READ: unexpected {tool_call.name}, skip")
+                # 仍 yield tool_call 让 chat.py 清除 full_content 中的 <tool_calls> 残骸
+                yield AgentEvent.tool_call(tool_call.name, tool_call.arguments)
                 self.messages.append({
                     "role": "system",
                     "content": f"⚠️ 阅读阶段不可用 {tool_call.name}。可用工具: {', '.join(sorted(READ_TOOLS))}。",
