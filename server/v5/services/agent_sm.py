@@ -85,6 +85,23 @@ class StateContext:
         }
 
 
+def _build_fallback_answer(fulltext: set, nofulltext: set) -> str:
+    """当 LLM 完全没产出时，用已收集的来源生成兜底回答。"""
+    lines = ["## 检索结果\n"]
+    if fulltext:
+        lines.append(f"已找到 **{len(fulltext)}** 篇有全文的论文：\n")
+        for i, s in enumerate(sorted(fulltext)):
+            file_id = s.replace('.pdf', '')
+            lines.append(f"{i+1}. {s} — [📄](/api/pdf/{file_id})")
+        lines.append("")
+    if nofulltext:
+        lines.append(f"另有 **{len(nofulltext)}** 篇仅有摘要的论文作为补充参考。\n")
+    if not fulltext and not nofulltext:
+        lines.append("未找到相关论文，请尝试更换搜索关键词。\n")
+    lines.append("\n请查看上方的参考来源列表获取详细信息。")
+    return "\n".join(lines)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 配置
 # ═══════════════════════════════════════════════════════════════════
@@ -212,6 +229,7 @@ class AgentStateMachine:
         self.use_native_tools = use_native_tools
         self.execute_tool = execute_tool_fn
         self._run_native_round = run_native_round_fn
+        self._system_prompt = AGENT_SYSTEM_PROMPT
         self.ctx = StateContext()
         self._safety_valve = MAX_TOTAL_TOOL_CALLS
 
@@ -486,22 +504,48 @@ class AgentStateMachine:
             f"  [{i+1}] {s}" for i, s in enumerate(sorted(self.ctx.nofulltext_sources))
         ) or "(无)"
 
-        self.messages.append({
-            "role": "system",
-            "content": RESPOND_PROMPT.format(
-                n_fulltext=len(self.ctx.fulltext_sources),
-                fulltext_list=fulltext_list,
-                n_nofulltext=len(self.ctx.nofulltext_sources),
-                nofulltext_list=nofulltext_list,
-            ),
-        })
+        respond_content = RESPOND_PROMPT.format(
+            n_fulltext=len(self.ctx.fulltext_sources),
+            fulltext_list=fulltext_list,
+            n_nofulltext=len(self.ctx.nofulltext_sources),
+            nofulltext_list=nofulltext_list,
+        )
 
+        # 尝试 1: 正常带上下文调用
+        self.messages.append({"role": "system", "content": respond_content})
+        has_answer = False
         async for event in self._run_native_round(
             self.task_id, 0, self.messages, force_answer=True,
         ):
             if event.type == "_tool_call":
                 continue
+            if event.type == "text":
+                has_answer = True
             yield event
+
+        if not has_answer:
+            log(f"TASK {self.task_id} RESPOND: empty response, retrying with stripped context")
+            # 尝试 2: 精简上下文 — 只用 RESPOND_PROMPT + 来源列表
+            retry_messages = [
+                {"role": "system", "content": self._system_prompt},
+                {"role": "system", "content": respond_content},
+                self.messages[-3],  # 最后一条用户消息或工具结果
+            ]
+            async for event in self._run_native_round(
+                self.task_id, 1, retry_messages, force_answer=True,
+            ):
+                if event.type == "_tool_call":
+                    continue
+                if event.type == "text":
+                    has_answer = True
+                yield event
+
+        if not has_answer:
+            # 尝试 3: 纯文本兜底 — 用英文写简单总结
+            log(f"TASK {self.task_id} RESPOND: still empty, using hardcoded fallback")
+            fallback = _build_fallback_answer(
+                self.ctx.fulltext_sources, self.ctx.nofulltext_sources)
+            yield AgentEvent.text(fallback)
 
         log(f"TASK {self.task_id} RESPOND: done")
 
