@@ -41,6 +41,7 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
     Agent 完成后验证 PDF、做高亮标注、推送 sources 事件到前端。
     """
     full_content = ""
+    in_respond = False  # 只有 RESPOND 阶段的 text 才累积到最终回答
     queue = _task_queues.get(task_id)
     try:
         async with _tasks_lock:
@@ -83,7 +84,8 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
                         )
             elif event.type == "text":
                 chunk = event.data["content"]
-                full_content += chunk
+                if in_respond:
+                    full_content += chunk
                 async with _tasks_lock:
                     _tasks[task_id].chunks.append(chunk)
             elif event.type == "search_results":
@@ -102,11 +104,16 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
                 break
             elif event.type == "state":
                 # 状态机状态切换事件 — 更新 TaskInfo 并推送前端
+                current = event.data.get('current_state', '')
                 async with _tasks_lock:
                     _tasks[task_id].agent_state = event.data
-                log(f"TASK {task_id} STATE: {event.data.get('current_state', '?')} "
+                log(f"TASK {task_id} STATE: {current} "
                     f"(papers: {event.data.get('papers_found', 0)}, "
                     f"read: {event.data.get('papers_read', 0)})")
+                # 进入 RESPOND 阶段后才开始累积最终回答
+                if current == "respond":
+                    full_content = ""
+                    in_respond = True
             elif event.type == "error":
                 log(f"TASK {task_id} agent error: {event.data['message']}")
                 async with _tasks_lock:
