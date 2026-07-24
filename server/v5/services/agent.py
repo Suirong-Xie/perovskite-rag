@@ -333,9 +333,8 @@ async def _run_native_round(
         yield AgentEvent("_tool_call", {"tool_call": ToolCall(tc["name"], tc["arguments"])})
         return
 
-    # 没有 tool_call → 最终回答
+    # 没有 tool_call → 最终回答（文本已在流式推送中实时发送）
     log(f"TASK {task_id} Round {round_num} FINAL ANSWER: {len(full_response)} chars")
-    yield AgentEvent.text(full_response)
     yield AgentEvent.done()
 
 

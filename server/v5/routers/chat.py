@@ -231,8 +231,12 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
         else:
             full_content = clean_content
 
+        # 构建思考链路（清洗掉裸 XML）
+        thinking_chain = _build_thinking_chain(_tasks[task_id].chunks)
+
         if full_content:
-            store.append_message(sid, "assistant", full_content, validated_sources)
+            store.append_message(sid, "assistant", full_content, validated_sources,
+                                 thinking_chain=thinking_chain)
 
         # 存储验证后的 sources 到 task，供 SSE 端点推送
         if validated_sources:
