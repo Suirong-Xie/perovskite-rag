@@ -181,17 +181,23 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
         # ── 引用幻觉校验：检查回答中引用的 File ID 是否都经过 PDF 验证 ──
         if full_content:
             import re as _re
-            cited_ids = set(_re.findall(r'\[📄\]\(/api/pdf/([^)]+)\)', full_content))
+            # 规范化：去掉 .pdf 后缀 (Agent 有时会带 .pdf 有时不带)
+            cited_ids = {cid.replace('.pdf', '') for cid in
+                         _re.findall(r'\[📄\]\(/api/pdf/([^)]+)\)', full_content)}
             async with _tasks_lock:
                 validated_ids = set(_tasks[task_id].pdfs_validated)
             fake_ids = cited_ids - validated_ids
             if fake_ids:
                 log(f"TASK {task_id} HALLUCINATION: {len(fake_ids)} fake citations: {fake_ids}")
                 for fid in fake_ids:
-                    # 把假引用替换为醒目的警告标记
+                    # 把假引用替换为醒目的警告标记（尝试带和不带 .pdf 两种格式）
                     full_content = full_content.replace(
                         f"[📄](/api/pdf/{fid})",
                         f"[⚠️ 未验证引用](/api/pdf/{fid})"
+                    )
+                    full_content = full_content.replace(
+                        f"[📄](/api/pdf/{fid}.pdf)",
+                        f"[⚠️ 未验证引用](/api/pdf/{fid}.pdf)"
                     )
             else:
                 log(f"TASK {task_id} CITATION CHECK: all {len(cited_ids)} citations valid")
