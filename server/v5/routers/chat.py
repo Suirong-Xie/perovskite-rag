@@ -131,35 +131,48 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
 
             # 用 find_pdf_fast 做 O(1) 查找（复用 journal_name）
             pdf_path_str = find_pdf_fast(source, journal_name)
-            if not pdf_path_str:
-                log(f"TASK {task_id} SOURCES: PDF not found for {source}")
-                continue
+            has_pdf = bool(pdf_path_str)
 
-            async with _tasks_lock:
-                _tasks[task_id].pdfs_validated.add(file_id)
+            if has_pdf:
+                async with _tasks_lock:
+                    _tasks[task_id].pdfs_validated.add(file_id)
 
-            # PDF 高亮元数据提取（不修改 PDF，只出 metadata 给前端 CSS overlay）
-            content_preview = (s.get("content", "") or "")[:200].replace("\n", " ").strip()
-            highlight_meta = {}
-            chunk_text = s.get("content", "")[:2000]
-            if chunk_text:
-                try:
-                    highlight_meta = extract_highlight_meta(pdf_path_str, [chunk_text])
-                    if highlight_meta.get("chunks"):
-                        annot_count += 1
-                        log(f"TASK {task_id} ANNOTATE: {file_id} → meta extracted")
-                except Exception as e:
-                    log(f"TASK {task_id} ANNOTATE error for {file_id}: {e}")
+                # PDF 高亮元数据提取
+                content_preview = (s.get("content", "") or "")[:200].replace("\n", " ").strip()
+                highlight_meta = {}
+                chunk_text = s.get("content", "")[:2000]
+                if chunk_text:
+                    try:
+                        highlight_meta = extract_highlight_meta(pdf_path_str, [chunk_text])
+                        if highlight_meta.get("chunks"):
+                            annot_count += 1
+                            log(f"TASK {task_id} ANNOTATE: {file_id} → meta extracted")
+                    except Exception as e:
+                        log(f"TASK {task_id} ANNOTATE error for {file_id}: {e}")
 
-            # 构建验证过的 source 条目（含高亮元数据）
-            validated_sources.append({
-                "file_id": file_id,
-                "journal_name": journal_name or "Unknown",
-                "source": source,
-                "content_preview": content_preview,
-                "pdf_url": f"/api/pdf/{file_id}",
-                "highlight": highlight_meta,  # 高亮页码和 chunk 信息
-            })
+                validated_sources.append({
+                    "file_id": file_id,
+                    "journal_name": journal_name or "Unknown",
+                    "source": source,
+                    "content_preview": content_preview,
+                    "pdf_url": f"/api/pdf/{file_id}",
+                    "highlight": highlight_meta,
+                    "has_pdf": True,
+                })
+            else:
+                # 无本地 PDF — 作为补充来源，仅提供 DOI 链接
+                doi = s.get("_s2_doi", "")
+                content_preview = (s.get("content", "") or "")[:200].replace("\n", " ").strip()
+                log(f"TASK {task_id} SOURCES: supplementary (no PDF) — {source}, doi={doi}")
+
+                validated_sources.append({
+                    "file_id": file_id,
+                    "journal_name": journal_name or "Unknown",
+                    "source": source,
+                    "content_preview": content_preview or "(摘要)",
+                    "doi_url": f"https://doi.org/{doi}" if doi else "",
+                    "has_pdf": False,
+                })
 
         log(f"TASK {task_id} SOURCES: {len(validated_sources)} validated, "
             f"{annot_count} annotated")
@@ -222,6 +235,10 @@ async def run_chat_pipeline(task_id: str, sid: str, req: ChatRequest):
     # 2. 系统预搜索：查询扩展 + BM25 混合检索，结果存入 TaskInfo.sources
     initial_results = search_papers(search_hint, top_k=5, expand=True, hybrid=True)
     if initial_results:
+        # 标记每个结果是否有本地 PDF 全文
+        for r in initial_results:
+            src = r.get("source", "")
+            r["has_pdf"] = bool(src and find_pdf_fast(src, r.get("journal_name", "")))
         async with _tasks_lock:
             if task_id in _tasks:
                 seen = {s.get("source", "") for s in _tasks[task_id].sources}
@@ -233,19 +250,34 @@ async def run_chat_pipeline(task_id: str, sid: str, req: ChatRequest):
         log(f"TASK {task_id} PRE-SEARCH: {len(initial_results)} results, "
             f"total {len(seen)} unique sources")
 
-    # 3. 构建用户消息：注入预搜索结果（含真实 File ID 和 PDF 链接）
+    # 3. 构建用户消息：注入预搜索结果（区分有 PDF 全文 vs 仅 DOI）
     user_message = req.message
     if initial_results:
-        user_message += "\n\n系统已为你预检索了以下文献（这些文件的 PDF 链接都是真实存在的）：\n"
-        for i, r in enumerate(initial_results):
-            file_id = r.get("source", "").replace(".pdf", "")
-            pdf_link = f"/api/pdf/{file_id}"
-            user_message += (
-                f"[{i+1}] {r.get('journal_name', 'Unknown')} | "
-                f"File ID: `{file_id}` | "
-                f"PDF: {pdf_link}\n"
-                f"    内容: {r.get('content', '')[:400]}\n\n"
-            )
+        primary = [r for r in initial_results if r.get("has_pdf")]
+        supplementary = [r for r in initial_results if not r.get("has_pdf")]
+
+        user_message += "\n\n系统已为你预检索了以下文献：\n"
+        if primary:
+            user_message += "\n📄 **可阅读全文的论文**（优先使用这些论文的信息回答）：\n"
+            for i, r in enumerate(primary):
+                file_id = r.get("source", "").replace(".pdf", "")
+                pdf_link = f"/api/pdf/{file_id}"
+                user_message += (
+                    f"[P{i+1}] {r.get('journal_name', 'Unknown')} | "
+                    f"File ID: `{file_id}` | "
+                    f"PDF: {pdf_link}\n"
+                    f"    内容: {r.get('content', '')[:400]}\n\n"
+                )
+        if supplementary:
+            user_message += "\n🔗 **仅有摘要/元数据的论文**（仅作参考，无法打开全文，回答中不要将其作为主要信息来源）：\n"
+            for i, r in enumerate(supplementary):
+                doi = r.get("_s2_doi", "")
+                doi_link = f"https://doi.org/{doi}" if doi else "(无 DOI)"
+                user_message += (
+                    f"[S{i+1}] {r.get('journal_name', 'Unknown')} | "
+                    f"DOI: {doi_link}\n"
+                    f"    摘要: {r.get('content', '')[:300]}\n\n"
+                )
     elif search_hint != req.message:
         user_message += f"\n\n[搜索提示] 你可以用以下英文关键词来搜索: {search_hint}"
 

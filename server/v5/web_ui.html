@@ -167,6 +167,12 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
   color: var(--text3); font-size: .72rem; flex: 1;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.sources-box .source-item .doi-link {
+  color: var(--link); font-size: .7rem; text-decoration: none;
+  white-space: nowrap; flex-shrink: 0;
+}
+.sources-box .source-item .doi-link:hover { text-decoration: underline }
+.sources-box .source-item.supp:hover { background: rgba(255,255,255,.03) }
 .hl-meta { display: flex; flex-wrap: wrap; gap: 3px }
 .hl-chip {
   font-size: .65rem; padding: 1px 7px; border-radius: 3px;
@@ -764,31 +770,45 @@ function renderSourcesBox(el, sources){
   if(old) old.remove();
   if(!sources||!sources.length) return;
 
-  let html = '<div class="sources-box"><div class="sources-title">📚 参考来源 ('+sources.length+')</div>';
-  for(let i=0; i<sources.length; i++){
-    const s = sources[i];
-    const hl = s.highlight || {};
-    const pages = hl.pages || [];
-    const chunks = hl.chunks || [];
-    const pageLabel = pages.length ? pages.map(p=>'p'+p).join(', ') : '';
+  const primary = sources.filter(s => s.has_pdf !== false);
+  const supplementary = sources.filter(s => s.has_pdf === false);
 
-    html += '<div class="source-item" style="border-left: 3px solid '+HL_BORDER[i%HL_COLORS.length]+'">'+
-      // 点击 PDF 链接打开侧面板
-      '<span class="s-jn" onclick="openPdf(\''+escAttr(s.file_id)+'\')">'+esc(s.journal_name)+'</span>'+
-      '<span class="s-src" onclick="openPdf(\''+escAttr(s.file_id)+'\')">📄 '+esc(s.source)+'</span>'+
-      // 高亮元数据
-      (chunks.length ? '<span class="hl-meta">'+
-        chunks.map(c => '<span class="hl-chip" style="background:'+HL_COLORS[i%HL_COLORS.length]+';border:1px solid '+HL_BORDER[i%HL_COLORS.length]+'" title="'+escAttr(c.text_preview||'')+'">'+
-          (c.pages||[]).map(p=>'p'+p).join(',')+' <small>('+c.count+' marks)</small>'+
-        '</span>').join(' ')+
-      '</span>' : '')+
-      // 内容预览
-      '<span class="s-pv">'+esc((s.content_preview||'').slice(0,120))+'</span>'+
-      // 页码导航按钮
-      (pages.length ? '<span class="hl-pages">'+
-        pages.map(p => '<button class="pg-btn" onclick="event.stopPropagation();openPdfPage(\''+escAttr(s.file_id)+'\','+p+')">'+p+'</button>').join('')+
-      '</span>' : '')+
-      '</div>';
+  let html = '<div class="sources-box">';
+  if (primary.length) {
+    html += '<div class="sources-title">📄 参考来源 ('+primary.length+')</div>';
+    for(let i=0; i<primary.length; i++){
+      const s = primary[i];
+      const hl = s.highlight || {};
+      const pages = hl.pages || [];
+      const chunks = hl.chunks || [];
+
+      html += '<div class="source-item" style="border-left: 3px solid '+HL_BORDER[i%HL_COLORS.length]+'">'+
+        '<span class="s-jn" onclick="openPdf(\''+escAttr(s.file_id)+'\')">'+esc(s.journal_name)+'</span>'+
+        '<span class="s-src" onclick="openPdf(\''+escAttr(s.file_id)+'\')">📄 '+esc(s.source)+'</span>'+
+        (chunks.length ? '<span class="hl-meta">'+
+          chunks.map(c => '<span class="hl-chip" style="background:'+HL_COLORS[i%HL_COLORS.length]+';border:1px solid '+HL_BORDER[i%HL_COLORS.length]+'" title="'+escAttr(c.text_preview||'')+'">'+
+            (c.pages||[]).map(p=>'p'+p).join(',')+' <small>('+c.count+' marks)</small>'+
+          '</span>').join(' ')+
+        '</span>' : '')+
+        '<span class="s-pv">'+esc((s.content_preview||'').slice(0,120))+'</span>'+
+        (pages.length ? '<span class="hl-pages">'+
+          pages.map(p => '<button class="pg-btn" onclick="event.stopPropagation();openPdfPage(\''+escAttr(s.file_id)+'\','+p+')">'+p+'</button>').join('')+
+        '</span>' : '')+
+        '</div>';
+    }
+  }
+  if (supplementary.length) {
+    html += '<div class="sources-title" style="margin-top:12px;opacity:0.7">🔗 补充参考 ('+supplementary.length+')</div>';
+    for(let i=0; i<supplementary.length; i++){
+      const s = supplementary[i];
+      const doiUrl = s.doi_url || '';
+      html += '<div class="source-item supp" style="border-left: 3px solid #666;opacity:0.75">'+
+        '<span class="s-jn">'+esc(s.journal_name)+'</span>'+
+        '<span class="s-src">📄 '+esc(s.source)+'</span>'+
+        '<span class="s-pv">'+esc((s.content_preview||'').slice(0,120))+'</span>'+
+        (doiUrl ? '<a class="doi-link" href="'+escAttr(doiUrl)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗 DOI</a>' : '<span class="doi-link" style="color:#666">无 DOI</span>')+
+        '</div>';
+    }
   }
   html += '</div>';
   el.insertAdjacentHTML('beforeend', html);

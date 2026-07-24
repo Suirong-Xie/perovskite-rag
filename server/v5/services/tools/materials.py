@@ -1,7 +1,16 @@
 """analyze_perovskite + search_materials — 材料科学工具。"""
 
 from ...core.schemas import ToolCall, ToolResult
-from ..materials_service import analyze_perovskite as _analyze, search_materials_project as _search
+
+_analyze = None
+_search = None
+_HAS_PYMATGEN = False
+
+try:
+    from ..materials_service import analyze_perovskite as _analyze, search_materials_project as _search
+    _HAS_PYMATGEN = True
+except ImportError:
+    pass
 
 
 # ── analyze_perovskite ──
@@ -23,6 +32,9 @@ ANALYZE_SCHEMA = {
 
 
 def execute_analyze(arguments: dict) -> tuple:
+    if not _HAS_PYMATGEN:
+        return (ToolResult(ToolCall("analyze_perovskite", arguments),
+                "Pymatgen 未安装，analyze_perovskite 工具不可用。", error="pymatgen not available"), None)
     formula = arguments.get("formula", "")
     if not formula:
         return (ToolResult(ToolCall("analyze_perovskite", arguments), "", error="formula is required"), None)
@@ -67,6 +79,9 @@ SEARCH_MAT_SCHEMA = {
 
 
 def execute_search_materials(arguments: dict) -> tuple:
+    if not _HAS_PYMATGEN:
+        return (ToolResult(ToolCall("search_materials", arguments),
+                "Pymatgen 未安装，search_materials 工具不可用。", error="pymatgen not available"), None)
     formula = arguments.get("formula", "")
     if not formula:
         return (ToolResult(ToolCall("search_materials", arguments), "", error="formula is required"), None)

@@ -29,14 +29,25 @@ def execute(arguments: dict) -> tuple:
     if not results:
         return (ToolResult(ToolCall("search_papers", arguments), "No results found."), [])
 
+    # 延迟导入避免循环: retrieval → tools.__init__ → search_local → retrieval
+    from .paper_utils import find_pdf_path as _find_pdf
+    for r in results:
+        src = r.get("source", "")
+        r["has_pdf"] = bool(src and _find_pdf(src))
+
     output_lines = [f"Found {len(results)} results for '{query}':\n"]
     for i, r in enumerate(results):
         file_id = r.get("source", "").replace(".pdf", "")
+        has_pdf = r.get("has_pdf", True)
+        pdf_tag = "📄 PDF" if has_pdf else "🔗 DOI only"
+        doi = r.get("_s2_doi", "")
         output_lines.append(
             f"[{i+1}] {r.get('journal_name', 'Unknown')} | "
-            f"Similarity: {r.get('similarity', 0):.3f} | "
-            f"Source: {r.get('source', 'N/A')} | "
-            f"File ID: {file_id}\n"
+            f"Sim: {r.get('similarity', 0):.3f} | "
+            f"{pdf_tag} | "
+            f"Source: {r.get('source', 'N/A')}\n"
             f"    Content: {r.get('content', '')[:600]}"
         )
+        if not has_pdf and doi:
+            output_lines[-1] += f"\n    DOI: https://doi.org/{doi}"
     return (ToolResult(ToolCall("search_papers", arguments), "\n".join(output_lines)), results)
