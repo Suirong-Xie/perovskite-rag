@@ -26,7 +26,7 @@ import re
 import os
 import subprocess
 from typing import AsyncGenerator, Optional, Callable
-from ..core.config import AGENT_MAX_ROUNDS, PAPERS_DIR, JOURNALS_PDF_DIR, LLM_BACKEND
+from ..core.config import AGENT_MAX_ROUNDS, LLM_BACKEND
 from ..core.schemas import AgentEvent, ToolCall, ToolResult
 from ..core.llm import chat_completion_stream, chat_completion_with_tools
 from .retrieval import search_papers
@@ -247,36 +247,6 @@ def _compress_context(messages: list[dict], max_tokens: int = CONTEXT_COMPRESS_T
         )
         log(f"Compressed system msg #{i}: {len(content)}→{len(m['content'])} chars")
         break  # 每次只压缩一条，下一轮再压缩下一条
-
-
-# journal_name（搜索结果）→ journals_pdf 子目录映射，用于 O(1) PDF 查找
-JOURNAL_DIR_MAP = {
-    "Nature": "Nature",
-    "NatEnergy": "NatEnergy",
-    "NatMater": "NatMater",
-    "NatPhoton": "NatPhoton",
-    "NatNanotech": "NatNanotech",
-    "NatComm": "NatComm",
-    "Science": "Science",
-}
-
-
-def find_pdf_fast(source: str, journal_name: str = "") -> Optional[str]:
-    """按 source 文件名 + journal_name 查找 PDF。
-    先用 journal_name 做 O(1) 查找 journals_pdf/{journal}/，
-    fallback 到扫描 papers_pdf/{year}/{month}/。
-    """
-    # 1. journals_pdf/{journal}/{source} — O(1) with journal_name
-    journal_dir_name = JOURNAL_DIR_MAP.get(journal_name, "")
-    if journal_dir_name:
-        pdf_file = JOURNALS_PDF_DIR / journal_dir_name / source
-        if pdf_file.exists():
-            return str(pdf_file)
-    # 2. journals_pdf/*/ — scan all journal dirs (fallback)
-    if JOURNALS_PDF_DIR.exists():
-        for journal_dir in JOURNALS_PDF_DIR.iterdir():
-            if not journal_dir.is_dir():
-                continue
 
 
 def register_tool(name: str, executor: Callable[[dict], tuple],

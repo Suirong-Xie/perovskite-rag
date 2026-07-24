@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import FileResponse
 from ..core.config import BASE_DIR, ANNOTATED_DIR
-from ..services.agent import find_pdf_fast
+from ..services.tools.paper_utils import find_pdf_fast
 
 router = APIRouter()
 

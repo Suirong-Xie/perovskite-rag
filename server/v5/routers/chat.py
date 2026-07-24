@@ -15,7 +15,8 @@ from ..core.config import AGENT_MAX_ROUNDS
 from ..services.session_store import store
 from ..services.translator import translate_to_english
 from ..services.annotator import extract_highlight_meta
-from ..services.agent import run_agent_loop, find_pdf_fast
+from ..services.agent import run_agent_loop
+from ..services.tools.paper_utils import find_pdf_fast
 
 router = APIRouter()
 
