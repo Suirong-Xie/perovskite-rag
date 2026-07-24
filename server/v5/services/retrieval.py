@@ -14,11 +14,14 @@ import math
 from pathlib import Path
 from typing import Optional
 from collections import defaultdict
-from ..core.config import VECTOR_DB_DIR, SEARCH_DEFAULT_TOP_K
+from ..core.config import VECTOR_DB_DIR, SEARCH_DEFAULT_TOP_K, S2_VECTOR_DB_DIR, S2_ENABLED
 from . import vector_search
 
 # 初始化向量检索
 vector_search.init(str(VECTOR_DB_DIR))
+if S2_ENABLED:
+    vector_search.init_s2(str(S2_VECTOR_DB_DIR))
+    print(f"[V5] S2 vector search enabled: {S2_VECTOR_DB_DIR}", flush=True)
 
 # ── 缓存 ──
 _cache: dict = {}
@@ -279,16 +282,18 @@ def _merge_results(semantic_results: list[dict], bm25_results: list[dict],
 def search_papers(query: str, top_k: int = None,
                   clear_cache: bool = False, expand: bool = True,
                   hybrid: bool = True,
+                  include_s2: bool = True,
                   journal_filter: str = None,
                   year_min: int = None, year_max: int = None) -> list:
     """
-    增强版语义搜索。
+    增强版语义搜索 (Nature + S2 双集合)。
 
     Args:
         query: 英文搜索查询
         top_k: 返回结果数
         expand: 是否启用查询扩展
         hybrid: 是否启用 BM25 混合搜索
+        include_s2: 是否包含 S2 集合 (默认 True)
         journal_filter: 只返回指定期刊（如 "Nature"）
         year_min/year_max: 年份范围过滤（暂未实现，预留接口）
 
@@ -311,8 +316,15 @@ def search_papers(query: str, top_k: int = None,
     log_detail = "expanded" if len(queries) > 1 else "single"
 
     for q in queries:
-        sem_results = vector_search.search(q, top_k=max(top_k * 2, 10),
-                                          journal_boost=True)
+        use_s2 = include_s2 and S2_ENABLED
+        if use_s2:
+            sem_results = vector_search.search_all(
+                q, top_k=max(top_k * 2, 10),
+                journal_boost=True, include_s2=True,
+            )
+        else:
+            sem_results = vector_search.search(q, top_k=max(top_k * 2, 10),
+                                              journal_boost=True)
 
         if hybrid:
             bm25_results = _bm25_search(q, top_k=top_k * 2)
@@ -335,7 +347,8 @@ def search_papers(query: str, top_k: int = None,
         r["rank"] = i + 1
 
     elapsed = time.time() - start
-    print(f"[V5] SEARCH({log_detail}{'+bm25' if hybrid else ''}): "
+    s2_tag = "+s2" if (include_s2 and S2_ENABLED) else ""
+    print(f"[V5] SEARCH({log_detail}{'+bm25' if hybrid else ''}{s2_tag}): "
           f"'{query[:60]}' → {len(ranked)} results in {elapsed:.2f}s "
           f"({len(queries)} queries, {len(all_results)} raw)", flush=True)
 

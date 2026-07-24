@@ -31,6 +31,12 @@ _data_dir: Path = None
 _vectors = None
 _texts = None
 
+# S2 向量库
+_s2_data_dir: Path = None
+_s2_vectors = None
+_s2_texts = None
+_s2_loaded = False
+
 
 def init(data_dir: str | Path):
     """初始化向量库路径。在服务启动时调用一次。"""
@@ -127,6 +133,154 @@ def search(query: str, top_k: int = 10, journal_boost: bool = True) -> list[dict
         })
 
     return results
+
+
+# ── S2 向量库 ──
+
+def init_s2(data_dir: str | Path):
+    """初始化 S2 向量库路径。"""
+    global _s2_data_dir
+    _s2_data_dir = Path(data_dir)
+
+
+def _ensure_s2_loaded():
+    """惰性加载 S2 向量和文本数据。"""
+    global _s2_vectors, _s2_texts, _s2_loaded
+
+    if _s2_loaded:
+        return _s2_vectors, _s2_texts
+
+    if _s2_data_dir is None:
+        _s2_loaded = True
+        return None, None
+
+    vec_path = _s2_data_dir / "vectors.npy"
+    txt_path = _s2_data_dir / "texts.jsonl"
+
+    if not vec_path.exists() or not txt_path.exists():
+        print(f"[vector_search] S2 index not found at {_s2_data_dir}, skipping S2.",
+              file=sys.stderr, flush=True)
+        _s2_loaded = True
+        return None, None
+
+    print(f"[vector_search] Loading S2 index from {_s2_data_dir}...",
+          file=sys.stderr, flush=True)
+    t0 = time.time()
+    _s2_vectors = np.load(vec_path)
+    _s2_texts = []
+    with open(txt_path, "r") as f:
+        for line in f:
+            _s2_texts.append(json.loads(line))
+
+    _s2_loaded = True
+    print(f"[vector_search] S2: {_s2_vectors.shape[0]} vectors, {len(_s2_texts)} texts "
+          f"({time.time() - t0:.1f}s)", file=sys.stderr, flush=True)
+    return _s2_vectors, _s2_texts
+
+
+def _s2_citation_boost(citation_count: int) -> float:
+    """引用数 boost: log10(citations) * factor, 上限 30%。"""
+    import math
+    if not citation_count or citation_count <= 0:
+        return 1.0
+    boost = 1.0 + math.log10(citation_count + 1) * S2_CITATION_BOOST_FACTOR
+    return min(boost, 1.3)
+
+
+S2_CITATION_BOOST_FACTOR = 0.1
+
+
+def search_all(
+    query: str,
+    top_k: int = 10,
+    journal_boost: bool = True,
+    include_s2: bool = True,
+) -> list[dict]:
+    """双集合搜索: Nature + S2。
+
+    Nature 全文结果权重 1.0, S2 Tier 1 (全文) ×0.9, S2 Tier 2 (摘要) ×0.8。
+    S2 结果额外附加引用数 boost。
+
+    Args:
+        query: 英文搜索查询
+        top_k: 返回结果数
+        journal_boost: 是否启用期刊加权
+        include_s2: 是否包含 S2 集合
+
+    Returns:
+        [{rank, similarity, journal_name, source, content, _s2_citation_count?, ...}, ...]
+    """
+    # 1. Nature 集合搜索
+    nature_results = search(query, top_k=top_k * 2, journal_boost=journal_boost)
+
+    if not include_s2:
+        return nature_results[:top_k]
+
+    # 2. S2 集合搜索
+    s2_vecs, s2_texts = _ensure_s2_loaded()
+    if s2_vecs is None or s2_texts is None:
+        return nature_results[:top_k]
+
+    # 获取 query 向量 (复用 search 中已计算的, 这里重新算一次)
+    resp = requests.post(OLLAMA_EMBED_URL,
+                         json={"model": EMBED_MODEL, "input": [query]},
+                         timeout=30)
+    resp.raise_for_status()
+    vec = np.array(resp.json()["embeddings"][0], dtype=np.float32)
+    norm = np.linalg.norm(vec)
+    if norm > 0:
+        vec /= norm
+
+    # S2 余弦相似度
+    s2_sims = s2_vecs @ vec
+    cand = min(top_k * 3, len(s2_sims))
+    s2_top_idx = np.argpartition(s2_sims, -cand)[-cand:]
+    s2_top_idx = s2_top_idx[np.argsort(-s2_sims[s2_top_idx])]
+
+    s2_results = []
+    for idx in s2_top_idx[:top_k * 2]:
+        rec = s2_texts[idx]
+        tier = rec.get("_s2_tier", 2)
+        citations = rec.get("_s2_citation_count", 0) or 0
+
+        # S2 权重: Tier 1 = 0.9, Tier 2 = 0.8
+        tier_weight = 0.9 if tier == 1 else 0.8
+        citation_boost = _s2_citation_boost(citations)
+        score = float(s2_sims[idx]) * tier_weight * citation_boost
+
+        s2_results.append({
+            "idx": -1,  # S2 论文没有 Nature 索引
+            "similarity": round(float(s2_sims[idx]), 4),
+            "score": round(score, 4),
+            "journal_rank": rec.get("journal_rank", 8),
+            "journal_name": rec.get("journal", "Unknown"),
+            "source": rec.get("source", ""),
+            "content": (rec.get("content", "") or "")[:6000],
+            "_s2_citation_count": citations,
+            "_s2_year": rec.get("_s2_year"),
+            "_s2_tier": tier,
+            "_s2_paper_id": rec.get("_s2_paper_id", ""),
+            "_s2_doi": rec.get("_s2_doi", ""),
+            "is_s2": True,
+        })
+
+    # 3. 合并排序
+    # S2 分数归一化到 Nature 相似度范围
+    if s2_results:
+        max_s2_score = max(r["score"] for r in s2_results)
+        if max_s2_score > 0:
+            for r in s2_results:
+                r["similarity"] = round(r["score"] / max_s2_score * 0.85, 4)
+
+    merged = nature_results + s2_results
+    merged.sort(key=lambda x: x.get("similarity", 0), reverse=True)
+    merged = merged[:top_k]
+
+    # 重新编号 rank
+    for i, r in enumerate(merged):
+        r["rank"] = i + 1
+
+    return merged
 
 
 # ── CLI ──
