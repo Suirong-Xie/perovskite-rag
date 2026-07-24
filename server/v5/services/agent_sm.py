@@ -515,41 +515,60 @@ class AgentStateMachine:
             nofulltext_list=nofulltext_list,
         )
 
-        # 尝试 1: 正常带上下文调用
+        # 尝试 1: 正常上下文
         self.messages.append({"role": "system", "content": respond_content})
-        has_answer = False
+        resp_text = await self._try_respond_clean(self.messages, "attempt1")
+        if resp_text:
+            yield AgentEvent.text(resp_text)
+            return
+
+        # 尝试 2: 精简上下文 + 强指令防止输出 <tool_calls>
+        log(f"TASK {self.task_id} RESPOND: attempt1 failed (empty or XML), retrying")
+        retry_messages = [
+            {"role": "system", "content": self._system_prompt},
+            {"role": "system", "content": respond_content},
+            {"role": "system", "content": (
+                "⚠️ CRITICAL: You are in the FINAL ANSWER phase. "
+                "No tools are available. Output ONLY your Markdown answer. "
+                "DO NOT output <tool_calls> or any function-calling XML. "
+                "Cite papers using the [📄] and [🔗] link formats shown above."
+            )},
+            self.messages[-3],
+        ]
+        resp_text = await self._try_respond_clean(retry_messages, "attempt2")
+        if resp_text:
+            yield AgentEvent.text(resp_text)
+            return
+
+        # 尝试 3: 纯代码兜底
+        log(f"TASK {self.task_id} RESPOND: all attempts failed, using fallback")
+        fallback = _build_fallback_answer(
+            self.ctx.fulltext_sources, self.ctx.nofulltext_sources)
+        yield AgentEvent.text(fallback)
+
+    async def _try_respond_clean(self, messages, label) -> str:
+        """调用 LLM 生成回答，本地缓冲并检测 <tool_calls> 污染。
+        只在内容干净时才返回，否则返回空字符串。
+        不 yield 任何 text 事件 — 调用者负责在确认干净后推送。
+        """
+        resp_text = ""
         async for event in self._run_native_round(
-            self.task_id, 0, self.messages, force_answer=True,
+            self.task_id, 0, messages, force_answer=True,
         ):
             if event.type == "_tool_call":
-                continue
+                log(f"TASK {self.task_id} RESPOND {label}: LLM emitted tool_call, discarding")
+                return ""
             if event.type == "text":
-                has_answer = True
-            yield event
+                resp_text += event.data.get("content", "")
 
-        if not has_answer:
-            log(f"TASK {self.task_id} RESPOND: empty response, retrying with stripped context")
-            # 尝试 2: 精简上下文 — 只用 RESPOND_PROMPT + 来源列表
-            retry_messages = [
-                {"role": "system", "content": self._system_prompt},
-                {"role": "system", "content": respond_content},
-                self.messages[-3],  # 最后一条用户消息或工具结果
-            ]
-            async for event in self._run_native_round(
-                self.task_id, 1, retry_messages, force_answer=True,
-            ):
-                if event.type == "_tool_call":
-                    continue
-                if event.type == "text":
-                    has_answer = True
-                yield event
-
-        if not has_answer:
-            # 尝试 3: 纯文本兜底 — 用英文写简单总结
-            log(f"TASK {self.task_id} RESPOND: still empty, using hardcoded fallback")
-            fallback = _build_fallback_answer(
-                self.ctx.fulltext_sources, self.ctx.nofulltext_sources)
-            yield AgentEvent.text(fallback)
+        if not resp_text.strip():
+            return ""
+        if "<tool_call" in resp_text or "<tool_calls>" in resp_text:
+            log(f"TASK {self.task_id} RESPOND {label}: text contains <tool_calls> XML, "
+                f"discarding ({len(resp_text)} chars)")
+            return ""
+        log(f"TASK {self.task_id} RESPOND {label}: clean answer ({len(resp_text)} chars)")
+        return resp_text
 
         log(f"TASK {self.task_id} RESPOND: done")
 
