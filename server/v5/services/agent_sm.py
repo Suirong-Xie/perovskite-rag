@@ -524,6 +524,12 @@ class AgentStateMachine:
 
         # 尝试 2: 精简上下文 + 强指令防止输出 <tool_calls>
         log(f"TASK {self.task_id} RESPOND: attempt1 failed (empty or XML), retrying")
+        # 找到用户的原始问题
+        user_msg = None
+        for m in reversed(self.messages):
+            if m.get("role") == "user":
+                user_msg = m
+                break
         retry_messages = [
             {"role": "system", "content": self._system_prompt},
             {"role": "system", "content": respond_content},
@@ -533,7 +539,7 @@ class AgentStateMachine:
                 "DO NOT output <tool_calls> or any function-calling XML. "
                 "Cite papers using the [📄] and [🔗] link formats shown above."
             )},
-            self.messages[-3],
+            user_msg or self.messages[-1],
         ]
         resp_text = await self._try_respond_clean(retry_messages, "attempt2")
         if resp_text:
