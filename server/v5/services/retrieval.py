@@ -166,7 +166,7 @@ def _expand_queries(query: str) -> list[str]:
     if 3 <= len(keywords) < len(words):
         queries.append(" ".join(keywords))
 
-    # 钙钛矿领域同义词映射
+    # 钙钛矿领域同义词映射 (所有 key 统一 lowercase)
     synonyms = {
         "stability": ["degradation", "lifetime", "durability"],
         "efficient": ["performance", "PCE"],
@@ -183,19 +183,46 @@ def _expand_queries(query: str) -> list[str]:
         "flexible": ["bendable", "foldable"],
         "large area": ["scalable", "scale-up", "module"],
         "lead free": ["tin", "Sn-based", "lead-free"],
-        "2D": ["two-dimensional", "Ruddlesden-Popper", "layered"],
+        "2d": ["two-dimensional", "Ruddlesden-Popper", "layered"],
     }
 
-    # 同义词版本：替换 1-2 个词为同义词
+    # ── 同义词变体收集 ──
     synonym_variants = []
-    for i, w in enumerate(keywords):
-        if w in synonyms:
-            for syn in synonyms[w][:2]:  # 最多取 2 个同义词
-                variant = keywords.copy()
-                variant[i] = syn
-                synonym_variants.append(" ".join(variant))
-    # 只加前 2 个变体（避免查询爆炸）
-    for sv in synonym_variants[:2]:
+
+    # ── 多词短语匹配 ──
+    # 用滑窗检查 2-gram / 3-gram 是否命中同义词表
+    for n in (3, 2):
+        for j in range(len(keywords) - n + 1):
+            phrase = " ".join(keywords[j:j + n])
+            if phrase in synonyms:
+                # 找到多词短语→标记对应的单词范围已用
+                # 为简洁起见: 将 phrase 当做一个整体替换点
+                for syn in synonyms[phrase][:1]:  # 多词短语只取1个变体
+                    variant = keywords.copy()
+                    variant[j:j + n] = syn.split()
+                    sv = " ".join(variant)
+                    if sv not in synonym_variants and sv != query_lower:
+                        synonym_variants.append(sv)
+
+    # 同义词版本：交错分配——每个关键词最多取 1 个变体后轮询下一轮，
+    # 避免第一个关键词的同义词占满 2 个配额
+    MAX_SYNONYM_VARIANTS = 2
+    for syn_idx in range(2):
+        if len(synonym_variants) >= MAX_SYNONYM_VARIANTS:
+            break
+        for i, w in enumerate(keywords):
+            if len(synonym_variants) >= MAX_SYNONYM_VARIANTS:
+                break
+            if w in synonyms:
+                syns = synonyms[w]
+                if syn_idx < len(syns):
+                    variant = keywords.copy()
+                    variant[i] = syns[syn_idx]
+                    sv = " ".join(variant)
+                    if sv not in synonym_variants and sv != query_lower:
+                        synonym_variants.append(sv)
+    # 只加前 N 个变体（避免查询爆炸）
+    for sv in synonym_variants[:MAX_SYNONYM_VARIANTS]:
         if sv not in queries:
             queries.append(sv)
 

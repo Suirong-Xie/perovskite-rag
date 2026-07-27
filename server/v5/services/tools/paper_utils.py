@@ -66,6 +66,10 @@ def find_pdf_fast(source: str, journal_name: str = "") -> Optional[str]:
     3. DOI 提取匹配 — S2 chunk source 提取 DOI 后在 PDF 库中查找
     4. papers_pdf/{year}/{month}/{source} — 旧 arXiv 数据
     """
+    # 空 source 直接返回 None，避免 Path / "" 返回目录自身
+    if not source or not source.strip():
+        return None
+
     # 1. journals_pdf/{journal}/{source} — O(1) with journal_name
     journal_dir_name = JOURNAL_DIR_MAP.get(journal_name, "")
     if journal_dir_name:
