@@ -106,7 +106,7 @@ def _build_fallback_answer(fulltext: set, nofulltext: set) -> str:
 # 配置
 # ═══════════════════════════════════════════════════════════════════
 
-MIN_FULLTEXT_PAPERS = 5       # 回答前最少全文论文数
+MIN_FULLTEXT_PAPERS = 8       # 回答前最少全文论文数
 MIN_READ_CHARS = 100           # read_paper 有效内容最少字符数
 MAX_BACK_TO_RETRIEVE = 2       # 最多回退次数
 MAX_CONSECUTIVE_FAILS = 3      # 触发回退的连续失败数
@@ -119,7 +119,7 @@ BUDGETS = {
 
 from .tools import RETRIEVE_TOOLS, READ_TOOLS, filter_tools as _filter_tools
 
-MAX_TOTAL_TOOL_CALLS = 20
+MAX_TOTAL_TOOL_CALLS = 35
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -129,10 +129,10 @@ MAX_TOTAL_TOOL_CALLS = 20
 RETRIEVE_PROMPT = """
 ## 当前阶段：文献检索 (RETRIEVE)
 
-目标是收集 **≥{min_fulltext} 篇有全文的论文**。
+目标是收集 **≥{min_fulltext} 篇有全文的论文**，覆盖研究问题的不同侧面。
 
 ### 快速通道
-如果用户只是要求展示/列举论文（如"给我看几篇XX的论文"、"有哪些关于YY的研究"），搜索一轮后即可直接进入回答阶段，无需逐篇阅读全文。论文摘要和元数据在搜索结果中已经足够。
+如果用户只是要求展示/列举论文（如"给我看几篇XX的论文"、"有哪些关于YY的研究"），搜索一轮后即可直接进入回答阶段，无需逐篇阅读全文。
 
 ### 规则
 1. 如果用户消息中已附带系统预检索的文献列表，先评估
@@ -140,6 +140,7 @@ RETRIEVE_PROMPT = """
    - 🔗 标记的论文 = 仅有摘要/元数据, 作为参考但不能打开全文
 2. 使用 search_papers / search_arxiv / search_semantic_scholar 搜索
 3. 🔗 论文的摘要信息已包含在搜索结果中，可以直接用于回答，不必为了"看内容"而反复搜索
+4. 如果搜索结果不够 {min_fulltext} 篇有全文，换关键词从不同角度搜索（材料体系、制备工艺、表征手段、稳定性等维度）
 
 ### 已知无全文的论文（不要再搜）:
 {nofulltext_list}
@@ -152,19 +153,20 @@ RETRIEVE_PROMPT = """
 READ_PROMPT = """
 ## 当前阶段：深度阅读 (READ)
 
-从检索结果中选择论文，用 read_paper 阅读全文。如果论文没有全文（显示"无全文"），系统会**自动跳过**。
+从检索结果中逐一阅读论文全文。目标是**尽可能多地读**有全文的论文，积累丰富的实验数据和细节。
 
 ### 规则
 1. **优先阅读标记了 📄 或 PDF 链接的论文**（这些有本地全文）
 2. 标记了 🔗 或仅有 DOI 的论文无法打开全文，跳过它们
-3. 优先读顶刊论文（Nature/Science/NatEnergy 等）
+3. 优先读顶刊论文（Nature/Science/NatEnergy 等），但也要覆盖不同期刊和研究组
 4. 系统会自动追踪哪些有全文、哪些没有
 5. **连续 3 篇没有全文 → 自动回到检索阶段，换其他论文**
-6. 如果已获得足够细节，可以提前结束
+6. 读完一篇后继续读下一篇，不要过早结束 — 更全面的阅读会产生更深入的回答
+7. **你的目标是读完所有可读的论文**，而不只是 1~2 篇
 
 ### 预算
-- 最多 {max_papers} 篇
-- 成功读 ≥1 篇后有足够细节可直接进入回答
+- 本阶段最多可读 {max_papers} 篇
+- 至少读完 {min_fulltext} 篇才能进入回答
 """
 
 READ_FAILED_PROMPT = """
@@ -384,7 +386,10 @@ class AgentStateMachine:
         max_papers = BUDGETS["read_papers"]
         self.messages.append({
             "role": "system",
-            "content": READ_PROMPT.format(max_papers=max_papers),
+            "content": READ_PROMPT.format(
+                max_papers=max_papers,
+                min_fulltext=MIN_FULLTEXT_PAPERS,
+            ),
         })
 
         llm_rounds = 0
@@ -501,6 +506,18 @@ class AgentStateMachine:
         self.ctx.log_state(AgentState.RESPOND, "enter", "")
         yield AgentEvent.state_change(AgentState.RESPOND.value, self.ctx.state_summary())
 
+        # ── 从消息历史中提取已读论文的正文 ──
+        paper_contents = self._extract_read_papers()
+
+        # ── 构建干净的上下文（无 tool_call 格式）──
+        # 找到用户原始问题
+        user_msg = None
+        for m in reversed(self.messages):
+            if m.get("role") == "user":
+                user_msg = m
+                break
+
+        # 构建论文参考列表
         fulltext_list = "\n".join(
             f"  [{i+1}] {s}" for i, s in enumerate(sorted(self.ctx.fulltext_sources))
         ) or "(无)"
@@ -508,49 +525,68 @@ class AgentStateMachine:
             f"  [{i+1}] {s}" for i, s in enumerate(sorted(self.ctx.nofulltext_sources))
         ) or "(无)"
 
-        respond_content = RESPOND_PROMPT.format(
+        respond_prompt = RESPOND_PROMPT.format(
             n_fulltext=len(self.ctx.fulltext_sources),
             fulltext_list=fulltext_list,
             n_nofulltext=len(self.ctx.nofulltext_sources),
             nofulltext_list=nofulltext_list,
         )
 
-        # 尝试 1: 正常上下文
-        self.messages.append({"role": "system", "content": respond_content})
-        resp_text = await self._try_respond_clean(self.messages, "attempt1")
+        # 干净的上下文：无 tool_call / tool_result 格式，LLM 不会产生 XML 条件反射
+        clean_messages = [{"role": "system", "content": self._system_prompt}]
+
+        if paper_contents:
+            # 把所有已读论文正文拼成一个参考资料块
+            ref_blocks = []
+            for i, pc in enumerate(paper_contents):
+                ref_blocks.append(
+                    f"### [{i+1}] {pc['source']}\n{pc['content']}\n"
+                    f"---"
+                )
+            clean_messages.append({
+                "role": "system",
+                "content": (
+                    "## 已读论文全文参考资料\n\n"
+                    "以下是你已经阅读过的论文正文。回答中的所有事实必须来自这些资料。\n\n"
+                    + "\n\n".join(ref_blocks)
+                ),
+            })
+
+        clean_messages.append({"role": "system", "content": respond_prompt})
+        clean_messages.append(user_msg or {"role": "user", "content": "请基于以上论文回答。"})
+
+        resp_text = await self._try_respond_clean(clean_messages, "respond")
         if resp_text:
             yield AgentEvent.text(resp_text)
             return
 
-        # 尝试 2: 精简上下文 + 强指令防止输出 <tool_calls>
-        log(f"TASK {self.task_id} RESPOND: attempt1 failed (empty or XML), retrying")
-        # 找到用户的原始问题
-        user_msg = None
-        for m in reversed(self.messages):
-            if m.get("role") == "user":
-                user_msg = m
-                break
-        retry_messages = [
-            {"role": "system", "content": self._system_prompt},
-            {"role": "system", "content": respond_content},
-            {"role": "system", "content": (
-                "⚠️ CRITICAL: You are in the FINAL ANSWER phase. "
-                "No tools are available. Output ONLY your Markdown answer. "
-                "DO NOT output <tool_calls> or any function-calling XML. "
-                "Cite papers using the [📄] and [🔗] link formats shown above."
-            )},
-            user_msg or self.messages[-1],
-        ]
-        resp_text = await self._try_respond_clean(retry_messages, "attempt2")
-        if resp_text:
-            yield AgentEvent.text(resp_text)
-            return
-
-        # 尝试 3: 纯代码兜底
+        # 兜底
         log(f"TASK {self.task_id} RESPOND: all attempts failed, using fallback")
         fallback = _build_fallback_answer(
             self.ctx.fulltext_sources, self.ctx.nofulltext_sources)
         yield AgentEvent.text(fallback)
+
+    def _extract_read_papers(self) -> list[dict]:
+        """从消息历史中提取 read_paper 的返回内容，去除 tool_call 格式。"""
+        papers = []
+        for m in self.messages:
+            if m.get("role") != "tool":
+                continue
+            content = m.get("content", "")
+            # read_paper 的输出以 "Content of " 开头
+            if not content.startswith("Content of "):
+                continue
+            # 提取 source 和正文
+            first_newline = content.find("\n")
+            if first_newline == -1:
+                continue
+            header = content[:first_newline]  # "Content of Nature_2024_xxx.pdf (first 5000 chars):"
+            body = content[first_newline + 1:].strip()
+            source = header.replace("Content of ", "").split(" (first")[0]
+            if len(body) >= MIN_READ_CHARS:
+                papers.append({"source": source, "content": body[:5000]})
+        log(f"TASK {self.task_id} RESPOND: extracted {len(papers)} read papers")
+        return papers
 
     async def _try_respond_clean(self, messages, label) -> str:
         """调用 LLM 生成回答，本地缓冲并检测 <tool_calls> 污染。
@@ -575,8 +611,6 @@ class AgentStateMachine:
             return ""
         log(f"TASK {self.task_id} RESPOND {label}: clean answer ({len(resp_text)} chars)")
         return resp_text
-
-        log(f"TASK {self.task_id} RESPOND: done")
 
     # ── 辅助 ──
 

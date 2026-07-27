@@ -60,10 +60,10 @@ AGENT_MAX_ROUNDS = int(os.getenv("AGENT_MAX_ROUNDS", "10"))  # 安全阀，状�
 
 # Agent 状态机预算
 AGENT_STATE_BUDGETS = {
-    "retrieve_llm": int(os.getenv("AGENT_RETRIEVE_LLM", "2")),     # RETRIEVE 阶段最多 LLM 调用
-    "retrieve_search": int(os.getenv("AGENT_RETRIEVE_SEARCH", "3")), # RETRIEVE 阶段最多搜索次数
-    "read_papers": int(os.getenv("AGENT_READ_PAPERS", "3")),         # READ 阶段最多阅读篇数
+    "retrieve_llm": int(os.getenv("AGENT_RETRIEVE_LLM", "3")),       # RETRIEVE 阶段最多 LLM 决策轮
+    "retrieve_search": int(os.getenv("AGENT_RETRIEVE_SEARCH", "4")), # RETRIEVE 阶段最多搜索次数
+    "read_papers": int(os.getenv("AGENT_READ_PAPERS", "10")),        # READ 阶段最多阅读篇数
 }
 
 # RETRIEVE → READ 最少相关论文数
-AGENT_MIN_RELEVANT_PAPERS = int(os.getenv("AGENT_MIN_RELEVANT_PAPERS", "5"))
+AGENT_MIN_RELEVANT_PAPERS = int(os.getenv("AGENT_MIN_RELEVANT_PAPERS", "8"))

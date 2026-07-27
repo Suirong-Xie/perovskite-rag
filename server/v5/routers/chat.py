@@ -31,6 +31,22 @@ def log(msg: str):
     print(f"[V5] {msg}", flush=True)
 
 
+# ── 思考链路构建 ──
+
+def _build_thinking_chain(chunks: list[str]) -> str:
+    """从 Agent 中间产物中提取思考链路（💭 思考 + 🔧 工具调用 + ⚠️ 错误）。
+    过滤掉最终的 Markdown 回答文本。
+    """
+    chain_parts = []
+    for c in chunks:
+        stripped = c.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("💭") or stripped.startswith("🔧") or stripped.startswith("⚠️"):
+            chain_parts.append(stripped)
+    return "\n\n".join(chain_parts)
+
+
 # ── 核心 Agent 生成任务 ──
 
 
