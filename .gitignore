@@ -96,3 +96,10 @@ data/milvus_data/
 
 # ── Legacy session data ──
 data/perovskite_sessions/
+
+# ── S2 Bulk Ingest Data ──
+data/s2_corpus/
+data/s2_vector_db/
+journals_pdf/
+journals_pdf.tar
+*.tar

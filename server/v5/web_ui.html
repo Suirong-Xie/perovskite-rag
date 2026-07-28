@@ -733,7 +733,7 @@ function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').rep
 function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;') }
 function md(t){
   if(typeof marked==='undefined') return '<p>'+esc(t)+'</p>';
-  try { return marked.parse(t.replace(/\[📄\]\(([^\s)]+)\)/g,'<a href="$1" class="pdf-link" data-fid="$1">📄</a>')); }
+  try { return marked.parse(t.replace(/\[📄\]\(\/api\/pdf\/([^\s)]+)\)/g,'<a href="/api/pdf/$1" class="pdf-link" data-fid="$1">📄</a>')); }
   catch(e){ return '<p>'+esc(t)+'</p>'; }
 }
 
@@ -742,7 +742,7 @@ document.addEventListener('click', function(e){
   const link = e.target.closest('a.pdf-link');
   if(!link) return;
   e.preventDefault();
-  const fid = link.getAttribute('data-fid') || link.getAttribute('href').replace('/api/pdf/','');
+  const fid = (link.getAttribute('data-fid') || link.getAttribute('href')).replace('/api/pdf/','');
   openPdf(fid);
 });
 
