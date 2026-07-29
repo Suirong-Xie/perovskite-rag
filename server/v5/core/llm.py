@@ -89,6 +89,7 @@ async def chat_completion_with_tools(
     tools: list[dict],
     model: str = None,
     timeout: float = 120.0,
+    max_tokens: int = None,
 ):
     """
     使用原生 function calling 的流式 chat completion。
@@ -132,6 +133,8 @@ async def chat_completion_with_tools(
         "tools": openai_tools,
         "stream": True,
     }
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",

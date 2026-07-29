@@ -200,50 +200,34 @@ class TestPromptIntegrity:
             fulltext_list="  [1] Nature_2023_test.pdf\n  [2] Science_2022_test.pdf",
             n_nofulltext=1,
             nofulltext_list="  [1] JACS_2021_test.pdf",
+            unread_summary="(无)",
         )
         assert "3" in formatted
         assert "1" in formatted
 
-    def test_read_prompt_broad_format(self):
-        from v5.services.agent_sm import READ_PROMPT_BROAD
-        formatted = READ_PROMPT_BROAD.format(
-            max_reviews=2,
-            max_experiments=5,
-            total_papers=7,
-            min_fulltext=8,
-        )
-        assert "2" in formatted
-        assert "5" in formatted
-
-    def test_read_prompt_specific_format(self):
-        from v5.services.agent_sm import READ_PROMPT_SPECIFIC
-        formatted = READ_PROMPT_SPECIFIC.format(
-            total_papers=5,
-            min_fulltext=5,
-        )
-        assert "5" in formatted
-
-    def test_read_transition_prompt_format(self):
-        from v5.services.agent_sm import READ_TRANSITION_PROMPT
-        formatted = READ_TRANSITION_PROMPT.format(
-            reviews_read=2,
-            remaining=5,
-            experiment_list="- paper_a.pdf (2024 | Nature)\n- paper_b.pdf (2023 | Science)",
-        )
-        assert "2" in formatted
-        assert "5" in formatted
-        assert "paper_a.pdf" in formatted
-
-    def test_read_failed_prompt_format(self):
-        from v5.services.agent_sm import READ_FAILED_PROMPT
-        formatted = READ_FAILED_PROMPT.format(
-            fails=3,
-            nofulltext_list="- p1.pdf\n  - p2.pdf",
-            fulltext_list="- Nature_2023.pdf",
-            needed=5,
+    def test_quick_read_prompt_format(self):
+        from v5.services.agent_sm import QUICK_READ_PROMPT
+        formatted = QUICK_READ_PROMPT.format(
+            max_papers=3,
+            paper_pool_summary="### 📝 综述论文\n  - test_review.pdf — Nature\n",
         )
         assert "3" in formatted
-        assert "5" in formatted
+        assert "test_review.pdf" in formatted
+
+    def test_deep_read_prompt_format(self):
+        from v5.services.agent_sm import DEEP_READ_PROMPT
+        formatted = DEEP_READ_PROMPT.format(
+            max_papers=4,
+            followup_question="掺杂对稳定性的影响？",
+            total_pool=10,
+            read_count=2,
+            unread_count=8,
+            paper_pool_summary="### 📝 综述论文\n  - test.pdf\n",
+        )
+        assert "4" in formatted
+        assert "掺杂" in formatted
+        assert "10" in formatted
+        assert "8" in formatted  # unread_count
 
     def test_no_template_injection_possible(self):
         """Prompt templates should not allow format string injection via missing keys."""
@@ -301,7 +285,7 @@ class TestStateTransitions:
     def test_question_type_affects_budget(self):
         """Specific questions should skip reviews, broad should include them."""
         from v5.services.agent_sm import BUDGETS
-        max_papers = BUDGETS["read_papers"]
+        max_papers = BUDGETS["quick_read"]
 
         # Specific: no reviews
         if True:  # question_type == "specific"

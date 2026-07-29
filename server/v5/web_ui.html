@@ -187,6 +187,26 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 }
 .pg-btn:hover { background: var(--accent); color: var(--bg); }
 
+/* ── Suggestions box ── */
+.suggestions-box {
+  margin-top: 14px; padding: 12px 16px;
+  background: var(--surface); border: 1px solid rgba(210,168,92,.15);
+  border-radius: 8px; font-size: .78rem;
+}
+.suggestions-title {
+  color: var(--accent); font-weight: 500; margin-bottom: 8px;
+  font-size: .76rem; text-transform: uppercase; letter-spacing: .4px;
+}
+.suggestion-btn {
+  display: block; width: 100%; text-align: left;
+  background: none; border: 1px solid var(--border2); color: var(--text2);
+  padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: .8rem;
+  font-family: inherit; margin-bottom: 4px; transition: all .15s;
+  line-height: 1.4;
+}
+.suggestion-btn:hover { background: rgba(210,168,92,.08); color: var(--text); border-color: var(--accent) }
+.suggestion-btn:last-child { margin-bottom: 0 }
+
 /* Typing dots */
 .dots { display: flex; gap: 3px; padding: 6px 0 }
 .dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--text3); animation: b 1.2s infinite }
@@ -456,6 +476,9 @@ async function load(id){
           if(s.highlight && s.highlight.chunks) setPdfHighlights(s.file_id, s.highlight);
         }
       }
+      if(m.suggestions && m.suggestions.length) {
+        renderSuggestions(msgEl, m.suggestions);
+      }
       if(m._task_id) activeTask = {el: msgEl, taskId: m._task_id, content: m.content};
     }
     scrollDown();
@@ -625,12 +648,39 @@ async function streamTask(taskId, offset){
               receivedText = true;
               window._fc[taskId]=(window._fc[taskId]||'')+d.content;
               el.innerHTML = md(window._fc[taskId]); el.classList.add('streaming'); scrollDown();
+            } else if(d.type==='state'){
+              const st = d.data;
+              document.getElementById('chatStatus').textContent =
+                (st.current_state_label || st.current_state) +
+                ' · 已检索' + (st.papers_found || 0) + '篇' +
+                ' · 已读' + (st.papers_read || 0) + '篇';
+              if(st.current_state === 'respond'){
+                window._fc[taskId] = '';
+                el.innerHTML = '<div class="dots"><span></span><span></span><span></span></div>';
+              }
+            } else if(d.type==='tool_call'){
+              const label = d.data.name + (d.data.arguments ? ' ' + JSON.stringify(d.data.arguments) : '');
+              const existingTags = el.querySelectorAll('.evt.tool');
+              el.innerHTML = '';
+              existingTags.forEach(function(t){ el.appendChild(t.cloneNode(true)); });
+              el.insertAdjacentHTML('beforeend',
+                '<div class="evt tool"><span class="tag">🔧 '+esc(label)+'</span></div>');
+              window._fc[taskId] = '';
+              scrollDown();
+            } else if(d.type==='tool_result'){
+              if(d.data.error){
+                el.insertAdjacentHTML('beforeend',
+                  '<div class="evt err">⚠️ '+esc(d.data.error)+'</div>');
+                scrollDown();
+              }
             } else if(d.type==='sources'){
               window._sources = d.data;
               renderSourcesBox(el, window._sources);
               for(const s of d.data){
                 if(s.highlight && s.highlight.chunks) setPdfHighlights(s.file_id, s.highlight);
               }
+            } else if(d.type==='suggestions'){
+              renderSuggestions(el, d.data);
             } else if(d.type==='done'){
               console.log('[streamTask pump] received done event');
             }
@@ -694,6 +744,33 @@ async function sendMessage(){
           if(d.type==='text'){
             window._fc[task_id]+=d.content;
             bubble.innerHTML = md(window._fc[task_id]); bubble.classList.add('streaming'); scrollDown();
+          } else if(d.type==='state'){
+            const st = d.data;
+            document.getElementById('chatStatus').textContent =
+              (st.current_state_label || st.current_state) +
+              ' · 已检索' + (st.papers_found || 0) + '篇' +
+              ' · 已读' + (st.papers_read || 0) + '篇';
+            // 进入回答阶段时清空之前的思考文本
+            if(st.current_state === 'respond'){
+              window._fc[task_id] = '';
+              bubble.innerHTML = '<div class="dots"><span></span><span></span><span></span></div>';
+            }
+          } else if(d.type==='tool_call'){
+            const label = d.data.name + (d.data.arguments ? ' ' + JSON.stringify(d.data.arguments) : '');
+            // 工具调用时清空 LLM 思考文本，只保留工具标签
+            const existingTags = bubble.querySelectorAll('.evt.tool');
+            bubble.innerHTML = '';
+            existingTags.forEach(function(t){ bubble.appendChild(t.cloneNode(true)); });
+            bubble.insertAdjacentHTML('beforeend',
+              '<div class="evt tool"><span class="tag">🔧 '+esc(label)+'</span></div>');
+            window._fc[task_id] = '';
+            scrollDown();
+          } else if(d.type==='tool_result'){
+            if(d.data.error){
+              bubble.insertAdjacentHTML('beforeend',
+                '<div class="evt err">⚠️ '+esc(d.data.error)+'</div>');
+              scrollDown();
+            }
           } else if(d.type==='sources'){
             window._sources = d.data;
             renderSourcesBox(bubble, window._sources);
@@ -703,6 +780,8 @@ async function sendMessage(){
                 setPdfHighlights(s.file_id, s.highlight);
               }
             }
+          } else if(d.type==='suggestions'){
+            renderSuggestions(bubble, d.data);
           }
         }catch(_){} }
     }
@@ -733,7 +812,7 @@ function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').rep
 function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;') }
 function md(t){
   if(typeof marked==='undefined') return '<p>'+esc(t)+'</p>';
-  try { return marked.parse(t.replace(/\[📄\]\(\/api\/pdf\/([^\s)]+)\)/g,'<a href="/api/pdf/$1" class="pdf-link" data-fid="$1">📄</a>')); }
+  try { return marked.parse(t.replace(/\[📄\]\(([^\s)]+)\)/g, function(m, url){ const fid=url.replace(/^\/api\/pdf\//,'').replace(/\.pdf$/,''); return '<a href="/api/pdf/'+fid+'" class="pdf-link" data-fid="'+fid+'">📄</a>'; })); }
   catch(e){ return '<p>'+esc(t)+'</p>'; }
 }
 
@@ -810,6 +889,18 @@ function renderSourcesBox(el, sources){
         '</div>';
     }
   }
+  html += '</div>';
+  el.insertAdjacentHTML('beforeend', html);
+}
+
+/* Suggestions box */
+function renderSuggestions(el, items){
+  if(!items||!items.length) return;
+  let html = '<div class="suggestions-box">'+
+    '<div class="suggestions-title">🔍 继续深入</div>';
+  items.forEach(function(q){
+    html += '<button class="suggestion-btn" onclick="quick(\''+escAttr(q)+'\')">'+esc(q)+'</button>';
+  });
   html += '</div>';
   el.insertAdjacentHTML('beforeend', html);
 }

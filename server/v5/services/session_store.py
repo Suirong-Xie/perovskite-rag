@@ -94,8 +94,8 @@ class SessionStore:
             self._save()
 
     def append_message(self, sid: str, role: str, content: str, sources: list = None,
-                       thinking_chain: str = None):
-        """追加消息到 session 历史，可选附带参考来源列表和思考链路"""
+                       thinking_chain: str = None, suggestions: list = None):
+        """追加消息到 session 历史，可选附带参考来源列表、思考链路和后续建议"""
         session_dir = SESSIONS_DIR / sid
         session_dir.mkdir(parents=True, exist_ok=True)
         history_file = session_dir / "history.json"
@@ -108,6 +108,8 @@ class SessionStore:
             msg["sources"] = sources
         if thinking_chain:
             msg["thinking_chain"] = thinking_chain
+        if suggestions:
+            msg["suggestions"] = suggestions
         msgs.append(msg)
         with open(history_file, "w") as f:
             json.dump(msgs, f, ensure_ascii=False)
@@ -131,6 +133,24 @@ class SessionStore:
             with open(history_file) as f:
                 return json.load(f)
         return []
+
+    def get_paper_pool(self, sid: str) -> dict | None:
+        """加载 session 的论文池数据"""
+        pool_file = SESSIONS_DIR / sid / "paper_pool.json"
+        if pool_file.exists():
+            with open(pool_file) as f:
+                return json.load(f)
+        return None
+
+    def save_paper_pool(self, sid: str, pool_data: dict):
+        """保存 session 的论文池数据"""
+        session_dir = SESSIONS_DIR / sid
+        session_dir.mkdir(parents=True, exist_ok=True)
+        pool_file = session_dir / "paper_pool.json"
+        with open(pool_file, "w") as f:
+            json.dump(pool_data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
 
     def list_all(self) -> list:
         """按 order 列出所有 session 摘要"""

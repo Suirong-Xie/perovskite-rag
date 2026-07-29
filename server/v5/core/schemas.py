@@ -27,6 +27,8 @@ class TaskInfo:
         self.sources_json: Optional[str] = None
         # Agent 状态机当前状态（供 status API 和 SSE 暴露）
         self.agent_state: Optional[dict] = None
+        # 后续建议列表的 JSON 字符串（Agent 完成后设置）
+        self.suggestions_json: Optional[str] = None
 
 
 class SessionSummary:
@@ -116,3 +118,8 @@ class AgentEvent:
     def state_change(cls, state: str, summary: dict) -> "AgentEvent":
         """Agent 状态机状态切换事件，供前端展示进度。"""
         return cls("state", {"current_state": state, **summary})
+
+    @classmethod
+    def suggestions(cls, items: list[str]) -> "AgentEvent":
+        """后续研究建议列表。"""
+        return cls("suggestions", {"items": items})

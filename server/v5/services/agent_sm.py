@@ -32,13 +32,15 @@ from ..core.schemas import AgentEvent, ToolCall, ToolResult
 
 class AgentState(Enum):
     RETRIEVE = "retrieve"
-    READ = "read"
+    QUICK_READ = "quick_read"       # 首轮快速阅读（1-3 篇）
+    DEEP_READ = "deep_read"         # 跟进深入阅读（2-4 篇）
     RESPOND = "respond"
 
 
 STATE_LABELS = {
     AgentState.RETRIEVE: "检索文献",
-    AgentState.READ: "深度阅读",
+    AgentState.QUICK_READ: "快速阅读",
+    AgentState.DEEP_READ: "深入阅读",
     AgentState.RESPOND: "生成回答",
 }
 
@@ -59,6 +61,9 @@ class StateContext:
     question_type: str = "broad"           # "broad" | "specific"
     paper_type: dict[str, str] = field(default_factory=dict)
     # source → "review" | "experimental"
+
+    # 论文池引用（会话级，跨轮复用）
+    paper_pool: object | None = None  # SessionPaperPool
 
     # 计数器
     search_count: int = 0
@@ -203,21 +208,22 @@ def _classify_paper(source: str, meta: dict) -> str:
 # 配置
 # ═══════════════════════════════════════════════════════════════════
 
-MIN_FULLTEXT_PAPERS = 8       # 回答前最少全文论文数
+MIN_FULLTEXT_PAPERS = 3       # 回答前最少全文论文数（从 8 降到 3，渐进式）
 MIN_READ_CHARS = 100           # read_paper 有效内容最少字符数
-MAX_BACK_TO_RETRIEVE = 2       # 最多回退次数
+MAX_BACK_TO_RETRIEVE = 1       # 最多回退次数（从 2 降到 1）
 MAX_CONSECUTIVE_FAILS = 3      # 触发回退的连续失败数
 
 BUDGETS = {
     "retrieve_llm": AGENT_STATE_BUDGETS.get("retrieve_llm", 2),
-    "retrieve_search": AGENT_STATE_BUDGETS.get("retrieve_search", 3),
-    "read_papers": AGENT_STATE_BUDGETS.get("read_papers", 3),
+    "retrieve_search": AGENT_STATE_BUDGETS.get("retrieve_search", 2),
+    "quick_read": AGENT_STATE_BUDGETS.get("quick_read", 3),
+    "deep_read": AGENT_STATE_BUDGETS.get("deep_read", 4),
 }
 
 from .tools import RETRIEVE_TOOLS, READ_TOOLS, filter_tools as _filter_tools
 
-MAX_TOTAL_TOOL_CALLS = 35
-MAX_REJECTED_IN_READ = 3  # READ 阶段违规调用非 READ 工具次数上限
+MAX_TOTAL_TOOL_CALLS = 15      # 全局安全阀（从 35 降到 15）
+MAX_REJECTED_IN_READ = 3       # READ 阶段违规调用非 READ 工具次数上限
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -225,15 +231,12 @@ MAX_REJECTED_IN_READ = 3  # READ 阶段违规调用非 READ 工具次数上限
 # ═══════════════════════════════════════════════════════════════════
 
 RETRIEVE_PROMPT = """
-## 当前阶段：文献检索 (RETRIEVE)
+## 文献检索 — 直接搜索，不解释
 
-目标是收集 **≥{min_fulltext} 篇有全文的论文**，覆盖研究问题的不同侧面。
-
-### 快速通道
-如果用户只是要求展示/列举论文（如"给我看几篇XX的论文"、"有哪些关于YY的研究"），搜索一轮后即可直接进入回答阶段，无需逐篇阅读全文。
+收集 ≥{min_fulltext} 篇有全文的论文。**立即调用 search_papers / search_arxiv / search_semantic_scholar，不要输出任何文字。**
 
 ### 规则
-1. 如果用户消息中已附带系统预检索的文献列表，先评估
+1. 用户消息中已附带预检索文献列表，先评估是否足够
    - 📄 标记的论文 = 有全文, 优先使用
    - 🔗 标记的论文 = 仅有摘要/元数据, 作为参考但不能打开全文
 2. 使用 search_papers / search_arxiv / search_semantic_scholar 搜索
@@ -248,88 +251,42 @@ RETRIEVE_PROMPT = """
 - 收集到足够论文后自动进入阅读阶段
 """
 
-READ_PROMPT_BROAD = """
-## 当前阶段：深度阅读 — 综述优先模式
+# ── 新状态机 Prompts ──
 
-你的问题是综述/概述型的。请采用**两阶段结构化阅读**策略。
+QUICK_READ_PROMPT = """
+## 当前阶段：快速阅读 (QUICK_READ)
 
-### 📚 Phase 1: 先读综述论文（最多 {max_reviews} 篇）
-优先阅读下方「📝 综述论文」列表中的论文。读完每篇综述后，留意：
-- 哪些实验论文被频繁引用？它们的核心发现是什么？
-- 关键实验数据的出处（期刊、年份、研究组）
-- 该领域公认的基准结果和典型实验方法
+**重要：直接调用 read_paper 工具，不要写任何解释或分析文字！**
 
-**读完综述后，系统会自动引导你进入 Phase 2。**
+从论文池中一次性选择最多 {max_papers} 篇论文，立即调用 read_paper 工具。
 
-### 🔬 Phase 2: 再读代表性实验论文（最多 {max_experiments} 篇）
-根据综述中提取的关键参考文献，从「🔬 实验论文」列表中选择最有代表性的实验论文深入阅读。优先选：
-- 综述中频繁引用的论文
-- 提供量化数据（效率、稳定性、组分、器件结构）的论文
-- 不同研究组的代表性工作（避免全读同一课题组）
-- 高影响力期刊的论文
+### 选择策略
+- 综述型问题: 优先 read_paper 综述论文
+- 具体型问题: 优先 read_paper 实验论文
+- 同时调用多个 read_paper（系统会并行读取）
 
-### 规则
-1. **必须从综述开始** — 综述提供概念框架和研究全景
-2. 读完综述后，根据其引用的实验论文来选择下一步
-3. 跳过标记为 🔗 的论文（无全文）
-4. 不要过早结束 — 读满预算才能产生深入回答
+### 论文池
+{paper_pool_summary}
 
-### 预算
-- Phase 1 综述: 最多 {max_reviews} 篇
-- Phase 2 实验: 最多 {max_experiments} 篇
-- 总计: 最多 {total_papers} 篇
-- 至少 {min_fulltext} 篇后进入回答阶段
+- 读完即自动进入回答阶段
+- 如果论文池无合适论文，不调用任何工具，直接进入回答
 """
 
-READ_PROMPT_SPECIFIC = """
-## 当前阶段：深度阅读 — 聚焦模式
+DEEP_READ_PROMPT = """
+## 当前阶段：深入阅读 (DEEP_READ)
 
-你的问题是具体/技术型的。**跳过综述论文**，直接阅读实验研究论文。
+**重要：直接调用 read_paper 工具，不要写任何解释或分析文字！**
 
-### 阅读策略
-- 优先读与你问题最直接相关的实验论文
-- 寻找提供量化数据的论文（具体效率值、稳定性指标、组分、工艺参数等）
-- 如果有多个研究组报道了相关结果，做交叉对比
-- 综述论文（📝 标记）仅供参考，不要浪费配额去读
+跟进问题: {followup_question}
 
-### 规则
-1. 聚焦与你问题直接相关的实验数据
-2. 跳过综述论文
-3. 标记为 🔗 的论文无全文，跳过
-4. 不要过早结束
+从论文池（共 {total_pool} 篇，已读 {read_count} 篇，未读 {unread_count} 篇）中，
+一次性选择最多 {max_papers} 篇最相关的论文，立即调用 read_paper。
 
-### 预算
-- 最多 {total_papers} 篇
-- 至少 {min_fulltext} 篇后进入回答阶段
-"""
+{paper_pool_summary}
 
-READ_TRANSITION_PROMPT = """
-## ⏭️ 阶段切换：综述 → 实验论文
-
-你已读完 {reviews_read} 篇综述。现在根据已读综述中的参考文献，从下方实验论文列表中选择最具代表性的论文。
-
-选择标准：
-1. **被综述频繁引用**的实验论文
-2. 提供了**关键量化数据**（效率记录、稳定性里程碑、经典组分/工艺）
-3. 代表**不同研究组/方法**的论文（多样性 > 同质化）
-
-剩余阅读配额：{remaining} 篇。
-
-### 🔬 可读实验论文:
-{experiment_list}
-"""
-
-READ_FAILED_PROMPT = """
-## ⚠️ 连续 {fails} 篇论文没有全文！
-
-系统将回到检索阶段。请用**不同的搜索策略**重新搜索：
-- 尝试不同的出版源（Nature → ACS → RSC → Wiley）
-- 使用不同的关键词角度
-- 避免搜索已被标记为"无全文"的论文
-
-已知无全文: {nofulltext_list}
-当前全文: {fulltext_list}
-还需: {needed} 篇
+- 同时调用多个 read_paper（系统会并行读取）
+- 读完即进入回答阶段
+- 如果已读论文足够回答，不调用工具直接进入回答
 """
 
 RESPOND_PROMPT = """
@@ -381,6 +338,20 @@ RESPOND_PROMPT = """
 - **禁止编造 File ID、数据、论文标题**
 - **禁止提及"我读了X篇论文"之类的内部流程**
 - **禁止"多项研究/大量文献/广泛认为"等无引用的笼统表述**
+
+### 后续探索建议
+
+在回答末尾，根据尚未阅读的论文生成 2-3 个**具体的后续研究方向问题**。
+
+未读论文池:
+{unread_summary}
+
+输出格式（严格遵守）:
+---
+💡 **继续深入**:
+1. [这里写一个完整的、具体的中文问题？]
+2. [这里写第二个问题？]
+---
 """
 
 
@@ -402,6 +373,7 @@ class AgentStateMachine:
     def __init__(
         self, messages, task_id, use_native_tools,
         execute_tool_fn, run_native_round_fn, AGENT_SYSTEM_PROMPT,
+        paper_pool=None, followup_question="",
     ):
         self.messages = messages
         self.task_id = task_id
@@ -411,6 +383,13 @@ class AgentStateMachine:
         self._system_prompt = AGENT_SYSTEM_PROMPT
         self.ctx = StateContext()
         self._safety_valve = MAX_TOTAL_TOOL_CALLS
+        self.followup_question = followup_question
+
+        # 论文池集成
+        if paper_pool is not None:
+            self.ctx.paper_pool = paper_pool
+            log(f"TASK {task_id} POOL: integrated ({paper_pool.total_count} papers, "
+                f"unread={paper_pool.unread_count})")
 
         # 从预搜索中提取初始论文
         last_user = None
@@ -418,12 +397,24 @@ class AgentStateMachine:
             if m.get("role") == "user":
                 last_user = m
                 break
-        if last_user and "系统已为你预检索" in (last_user.get("content") or ""):
+        if last_user:
             content = last_user.get("content", "")
-            for match in re.finditer(r'File ID:\s*`?([^`\s]+)`?', content):
+            # 新格式: `file_id` (journal)
+            # 旧格式: File ID: `file_id`
+            for match in re.finditer(
+                r'(?:File ID:\s*)?`([A-Za-z][A-Za-z0-9_\-]{8,})`', content
+            ):
                 self.ctx.unknown_sources.add(match.group(1))
-            log(f"TASK {task_id} Pre-search: {len(self.ctx.unknown_sources)} papers")
-            self.ctx.search_count = 1
+            log(f"TASK {task_id} Pre-search: {len(self.ctx.unknown_sources)} papers "
+                f"extracted from user message")
+            if self.ctx.unknown_sources:
+                self.ctx.search_count = 1
+
+        # 从论文池补充（更可靠）
+        if self.ctx.paper_pool is not None:
+            for src in self.ctx.paper_pool.papers:
+                self.ctx.unknown_sources.add(src)
+            log(f"TASK {task_id} Pool provides +{self.ctx.paper_pool.total_count} sources")
 
     def _compress_retrieve_history(self):
         """进入 READ 前压缩 RETRIEVE 历史：去掉带 tool_calls 格式的消息，
@@ -534,16 +525,31 @@ class AgentStateMachine:
             f"RETRIEVE history collapsed into clean summary ({len(summary)} chars)")
 
     async def run(self) -> AsyncGenerator[AgentEvent, None]:
-        state = AgentState.RETRIEVE
-        max_loops = 10  # 全局安全阀
+        max_loops = 8  # 全局安全阀（降低：新状态机路径更短）
+
+        # ── 判断入口路径 ──
+        pool = self.ctx.paper_pool
+        has_pool = pool is not None and pool.unread_count > 0
+        is_followup = bool(self.followup_question) and has_pool
+
+        if is_followup:
+            log(f"TASK {self.task_id} PATH: follow-up → DEEP_READ → RESPOND "
+                f"(pool: {pool.total_count} papers, unread={pool.unread_count})")
+            state = AgentState.DEEP_READ
+        else:
+            log(f"TASK {self.task_id} PATH: fresh → RETRIEVE → QUICK_READ → RESPOND")
+            state = AgentState.RETRIEVE
 
         for _ in range(max_loops):
             try:
                 if state == AgentState.RETRIEVE:
                     async for event in self._run_retrieve():
                         yield event
-                elif state == AgentState.READ:
-                    async for event in self._run_read():
+                elif state == AgentState.QUICK_READ:
+                    async for event in self._run_quick_read():
+                        yield event
+                elif state == AgentState.DEEP_READ:
+                    async for event in self._run_deep_read():
                         yield event
                 elif state == AgentState.RESPOND:
                     async for event in self._run_respond():
@@ -565,14 +571,16 @@ class AgentStateMachine:
                            f"unknown={len(self.ctx.unknown_sources)}")
         yield AgentEvent.state_change(AgentState.RETRIEVE.value, self.ctx.state_summary())
 
-        # 检查是否已满足全文要求
-        if len(self.ctx.fulltext_sources) >= MIN_FULLTEXT_PAPERS:
-            log(f"TASK {self.task_id} Already have {len(self.ctx.fulltext_sources)} "
-                f"fulltext papers, skip RETRIEVE")
+        # 检查是否已有足够的候选论文（预搜索 + 前序轮次积累）
+        total_candidates = len(self.ctx.fulltext_sources) + len(self.ctx.unknown_sources)
+        if total_candidates >= MIN_FULLTEXT_PAPERS:
+            log(f"TASK {self.task_id} Already have {total_candidates} candidates "
+                f"(fulltext={len(self.ctx.fulltext_sources)}, "
+                f"unknown={len(self.ctx.unknown_sources)}), skip RETRIEVE")
             self.ctx.log_state(AgentState.RETRIEVE, "skip",
-                               f"enough fulltext ({len(self.ctx.fulltext_sources)})")
+                               f"enough candidates ({total_candidates})")
             yield AgentEvent.state_change(AgentState.RETRIEVE.value, self.ctx.state_summary())
-            raise _StateComplete(AgentState.READ)
+            raise _StateComplete(AgentState.QUICK_READ)
 
         # 注入 prompt
         nofulltext_str = "\n".join(f"  - {s}" for s in sorted(self.ctx.nofulltext_sources)) or "(尚无)"
@@ -593,78 +601,83 @@ class AgentStateMachine:
         while search_attempts < max_search and llm_rounds < max_llm:
             # 每次搜索前检查：是否已够
             if len(self.ctx.fulltext_sources) + len(self.ctx.unknown_sources) >= MIN_FULLTEXT_PAPERS * 2:
-                log(f"TASK {self.task_id} RETRIEVE: plenty of candidates, moving to READ")
+                log(f"TASK {self.task_id} RETRIEVE: plenty of candidates, moving to QUICK_READ")
                 break
 
-            tool_call = None
+            tool_calls_batch = []
             async for event in self._run_native_round(
                 self.task_id, self.ctx.retrieve_llm_calls + 1,
                 self.messages, force_answer=False,
                 allowed_tools=_filter_tools(RETRIEVE_TOOLS),
             ):
                 if event.type == "_tool_call":
-                    tool_call = event.data["tool_call"]
+                    tool_calls_batch.append(event.data["tool_call"])
                 elif event.type == "done":
-                    pass  # 忽略 — SM 自己管理状态转换
+                    pass
                 else:
                     yield event
 
             self.ctx.retrieve_llm_calls += 1
             llm_rounds += 1
 
-            if tool_call is None:
+            if not tool_calls_batch:
                 log(f"TASK {self.task_id} RETRIEVE: LLM done "
                     f"(fulltext={len(self.ctx.fulltext_sources)}, "
                     f"unknown={len(self.ctx.unknown_sources)})")
                 break
 
-            if tool_call.name not in RETRIEVE_TOOLS:
-                log(f"TASK {self.task_id} RETRIEVE: unexpected {tool_call.name}, skip")
-                # 仍 yield tool_call 让 chat.py 清除 full_content 中的 <tool_calls> 残骸
+            for tool_call in tool_calls_batch:
+                if search_attempts >= max_search:
+                    break
+
+                if tool_call.name not in RETRIEVE_TOOLS:
+                    log(f"TASK {self.task_id} RETRIEVE: unexpected {tool_call.name}, skip")
+                    yield AgentEvent.tool_call(tool_call.name, tool_call.arguments)
+                    self.messages.append({
+                        "role": "system",
+                        "content": f"⚠️ {tool_call.name} 不在检索阶段可用。请使用: {', '.join(sorted(RETRIEVE_TOOLS))}。",
+                    })
+                    continue
+
+                self.ctx.total_tool_calls += 1
+                search_attempts += 1
+                log(f"SM TASK {self.task_id} RETRIEVE [{search_attempts}/{max_search}]: "
+                    f"{tool_call.name}")
+
                 yield AgentEvent.tool_call(tool_call.name, tool_call.arguments)
-                self.messages.append({
-                    "role": "system",
-                    "content": f"⚠️ {tool_call.name} 不在检索阶段可用。请使用: {', '.join(sorted(RETRIEVE_TOOLS))}。",
-                })
-                continue
+                result, raw_data = self.execute_tool(tool_call)
+                log(f"SM TASK {self.task_id} RETRIEVE RESULT: {len(result.output)} chars")
 
-            self.ctx.total_tool_calls += 1
-            search_attempts += 1
-            log(f"SM TASK {self.task_id} RETRIEVE [{search_attempts}/{max_search}]: "
-                f"{tool_call.name}")
+                yield AgentEvent.tool_result(
+                    tool_call.name,
+                    result.output[:300] if result.output else "(empty)",
+                    result.error,
+                )
 
-            yield AgentEvent.tool_call(tool_call.name, tool_call.arguments)
-            result, raw_data = self.execute_tool(tool_call)
-            log(f"SM TASK {self.task_id} RETRIEVE RESULT: {len(result.output)} chars")
+                if raw_data and isinstance(raw_data, list):
+                    for item in raw_data:
+                        src = item.get("source", "") if isinstance(item, dict) else ""
+                        if src and src not in self.ctx.nofulltext_sources:
+                            self.ctx.unknown_sources.add(src)
+                        if isinstance(item, dict) and src:
+                            self.ctx.paper_meta[src] = {
+                                "title": item.get("title", ""),
+                                "journal": item.get("journal_name", "") or item.get("venue", ""),
+                                "year": item.get("year", "") or item.get("_s2_year", ""),
+                                "content_preview": (
+                                    item.get("content", "")
+                                    or item.get("abstract", "")
+                                    or item.get("summary", "")
+                                    or ""
+                                )[:500],
+                            }
+                    yield AgentEvent.search_results(raw_data)
 
-            yield AgentEvent.tool_result(
-                tool_call.name,
-                result.output[:300] if result.output else "(empty)",
-                result.error,
-            )
+                self.ctx.search_count += 1
+                self._append_tool_result(tool_call, result)
 
-            if raw_data and isinstance(raw_data, list):
-                for item in raw_data:
-                    src = item.get("source", "") if isinstance(item, dict) else ""
-                    if src and src not in self.ctx.nofulltext_sources:
-                        self.ctx.unknown_sources.add(src)
-                    # 保存元数据（归一化三类搜索工具的字段名）
-                    if isinstance(item, dict) and src:
-                        self.ctx.paper_meta[src] = {
-                            "title": item.get("title", ""),
-                            "journal": item.get("journal_name", "") or item.get("venue", ""),
-                            "year": item.get("year", "") or item.get("_s2_year", ""),
-                            "content_preview": (
-                                item.get("content", "")
-                                or item.get("abstract", "")
-                                or item.get("summary", "")
-                                or ""
-                            )[:500],
-                        }
-                yield AgentEvent.search_results(raw_data)
-
-            self.ctx.search_count += 1
-            self._append_tool_result(tool_call, result)
+                if self.ctx.total_tool_calls >= self._safety_valve:
+                    break
 
             if self.ctx.total_tool_calls >= self._safety_valve:
                 break
@@ -673,9 +686,204 @@ class AgentStateMachine:
                            f"fulltext={len(self.ctx.fulltext_sources)}, "
                            f"unknown={len(self.ctx.unknown_sources)}")
         yield AgentEvent.state_change(AgentState.RETRIEVE.value, self.ctx.state_summary())
-        raise _StateComplete(AgentState.READ)
+        raise _StateComplete(AgentState.QUICK_READ)
 
-    # ── READ ──
+    # ── QUICK_READ (首轮快速阅读) ──
+
+    async def _run_quick_read(self) -> AsyncGenerator[AgentEvent, None]:
+        """首轮快速阅读: 从论文池选 1-3 篇代表性论文, 读完立即回答。"""
+        max_papers = BUDGETS["quick_read"]
+
+        # 提取用户问题
+        user_question = ""
+        for m in reversed(self.messages):
+            if m.get("role") == "user":
+                raw = m.get("content", "") or ""
+                idx = raw.find("系统已为你预检索")
+                user_question = raw[:idx].strip() if idx != -1 else raw.strip()
+                break
+        self.ctx.question_type = _classify_question(user_question)
+
+        # ── 从论文池选择代表性论文 ──
+        pool = self.ctx.paper_pool
+        if pool is not None and pool.unread_count > 0:
+            selected = pool.select_representative(
+                n=max_papers, question=user_question,
+                question_type=self.ctx.question_type,
+            )
+            log(f"TASK {self.task_id} QUICK_READ: selected {len(selected)} from pool "
+                f"(type={self.ctx.question_type})")
+            # 同步到 ctx
+            for p in selected:
+                src = p["source"]
+                if src not in self.ctx.fulltext_sources:
+                    self.ctx.unknown_sources.add(src)
+                if src not in self.ctx.paper_meta:
+                    self.ctx.paper_meta[src] = {
+                        "title": p.get("title", ""),
+                        "journal": p.get("journal", ""),
+                        "year": p.get("year", ""),
+                        "content_preview": p.get("content_preview", ""),
+                    }
+                self.ctx.paper_type[src] = p.get("paper_type", "experimental")
+        else:
+            log(f"TASK {self.task_id} QUICK_READ: no pool or empty, using ctx.unknown_sources")
+            selected = []
+
+        self.ctx.log_state(AgentState.QUICK_READ, "enter",
+                           f"candidates={len(self.ctx.unknown_sources)}")
+        yield AgentEvent.state_change(AgentState.QUICK_READ.value, self.ctx.state_summary())
+
+        # 如果没有候选论文，直接回答
+        total_candidates = len(self.ctx.unknown_sources | self.ctx.fulltext_sources)
+        if total_candidates == 0:
+            log(f"TASK {self.task_id} QUICK_READ: no papers to read, skip to RESPOND")
+            raise _StateComplete(AgentState.RESPOND)
+
+        # ── 直接执行阅读（不调 LLM，用启发式选择的结果）──
+        # QUICK_READ 中不再让 LLM 选择论文——直接用 select_representative() 的结果，
+        # 然后用 ToolCall 包装成正常的 read_paper 执行。省掉 1 次 LLM 往返。
+        papers_to_read = [p["source"] for p in selected] if selected else []
+        if not papers_to_read:
+            # fallback: 使用 ctx 中的 unknown_sources
+            papers_to_read = list(self.ctx.unknown_sources)[:max_papers]
+
+        log(f"TASK {self.task_id} QUICK_READ: executing reads for {papers_to_read}")
+
+        # 压缩 RETRIEVE 历史
+        self._compress_retrieve_history()
+
+        for source in papers_to_read:
+            if self.ctx.read_success_count >= max_papers:
+                break
+            if self.ctx.total_tool_calls >= self._safety_valve:
+                break
+
+            tool_call = ToolCall("read_paper", {"source": source})
+            self.ctx.total_tool_calls += 1
+
+            yield AgentEvent.tool_call("read_paper", {"source": source})
+            result, raw_data = self.execute_tool(tool_call)
+
+            result_chars = len(result.output) if result.output else 0
+            is_success = (result_chars >= MIN_READ_CHARS
+                          and not result.error
+                          and "PDF not found" not in (result.output or "")
+                          and "无全文" not in (result.output or ""))
+
+            if is_success:
+                self.ctx.read_success_count += 1
+                self.ctx.fulltext_sources.add(source)
+                self.ctx.unknown_sources.discard(source)
+                if pool:
+                    pool.mark_read(source, result.output)
+            else:
+                self.ctx.read_fail_count += 1
+                self.ctx.nofulltext_sources.add(source)
+                self.ctx.unknown_sources.discard(source)
+                if pool:
+                    pool.mark_nofulltext(source)
+
+            yield AgentEvent.tool_result(
+                "read_paper",
+                result.output[:300] if result.output else "(empty)",
+                result.error,
+            )
+            self._append_tool_result(tool_call, result)
+
+        self.ctx.log_state(AgentState.QUICK_READ, "exit",
+                           f"read={self.ctx.read_success_count}")
+        yield AgentEvent.state_change(AgentState.QUICK_READ.value, self.ctx.state_summary())
+        raise _StateComplete(AgentState.RESPOND)
+
+    # ── DEEP_READ (跟进深入阅读) ──
+
+    async def _run_deep_read(self) -> AsyncGenerator[AgentEvent, None]:
+        """跟进深入阅读: 根据用户跟进问题，从论文池选 2-4 篇最相关论文。"""
+        max_papers = BUDGETS["deep_read"]
+        pool = self.ctx.paper_pool
+
+        log(f"TASK {self.task_id} DEEP_READ: followup='{self.followup_question[:60]}'")
+
+        # 从论文池选择
+        if pool is not None and pool.unread_count > 0:
+            selected = pool.select_for_followup(
+                n=max_papers, followup_question=self.followup_question,
+            )
+            log(f"TASK {self.task_id} DEEP_READ: selected {len(selected)} from pool")
+            for p in selected:
+                src = p["source"]
+                if src not in self.ctx.paper_meta:
+                    self.ctx.paper_meta[src] = {
+                        "title": p.get("title", ""),
+                        "journal": p.get("journal", ""),
+                        "year": p.get("year", ""),
+                        "content_preview": p.get("content_preview", ""),
+                    }
+                self.ctx.unknown_sources.add(src)
+                self.ctx.paper_type[src] = p.get("paper_type", "experimental")
+        else:
+            log(f"TASK {self.task_id} DEEP_READ: no pool, fallback to RETRIEVE")
+            self.ctx.log_state(AgentState.DEEP_READ, "no_pool",
+                               "fallback to RETRIEVE")
+            yield AgentEvent.state_change(AgentState.DEEP_READ.value, self.ctx.state_summary())
+            raise _StateComplete(AgentState.RETRIEVE)  # 回退搜新论文
+
+        self.ctx.log_state(AgentState.DEEP_READ, "enter",
+                           f"unread={pool.unread_count if pool else 0}")
+        yield AgentEvent.state_change(AgentState.DEEP_READ.value, self.ctx.state_summary())
+
+        # ── 直接执行阅读（不调 LLM）──
+        papers_to_read = [p["source"] for p in selected] if selected else []
+        if not papers_to_read:
+            papers_to_read = list(self.ctx.unknown_sources)[:max_papers]
+
+        log(f"TASK {self.task_id} DEEP_READ: executing reads for {papers_to_read}")
+
+        for source in papers_to_read:
+            if self.ctx.read_success_count >= max_papers:
+                break
+            if self.ctx.total_tool_calls >= self._safety_valve:
+                break
+
+            tool_call = ToolCall("read_paper", {"source": source})
+            self.ctx.total_tool_calls += 1
+
+            yield AgentEvent.tool_call("read_paper", {"source": source})
+            result, raw_data = self.execute_tool(tool_call)
+
+            result_chars = len(result.output) if result.output else 0
+            is_success = (result_chars >= MIN_READ_CHARS
+                          and not result.error
+                          and "PDF not found" not in (result.output or "")
+                          and "无全文" not in (result.output or ""))
+
+            if is_success:
+                self.ctx.read_success_count += 1
+                self.ctx.fulltext_sources.add(source)
+                self.ctx.unknown_sources.discard(source)
+                if pool:
+                    pool.mark_read(source, result.output)
+            else:
+                self.ctx.read_fail_count += 1
+                self.ctx.nofulltext_sources.add(source)
+                self.ctx.unknown_sources.discard(source)
+                if pool:
+                    pool.mark_nofulltext(source)
+
+            yield AgentEvent.tool_result(
+                "read_paper",
+                result.output[:300] if result.output else "(empty)",
+                result.error,
+            )
+            self._append_tool_result(tool_call, result)
+
+        self.ctx.log_state(AgentState.DEEP_READ, "exit",
+                           f"read={self.ctx.read_success_count}")
+        yield AgentEvent.state_change(AgentState.DEEP_READ.value, self.ctx.state_summary())
+        raise _StateComplete(AgentState.RESPOND)
+
+    # ── (废弃) 旧 READ ──
 
     async def _run_read(self) -> AsyncGenerator[AgentEvent, None]:
         # ── 问题 & 论文分类 ──
@@ -944,11 +1152,20 @@ class AgentStateMachine:
             f"  [{i+1}] {s}" for i, s in enumerate(sorted(self.ctx.nofulltext_sources))
         ) or "(无)"
 
+        # 未读论文摘要（用于生成后续建议）
+        pool = self.ctx.paper_pool
+        if pool is not None and pool.unread_count > 0:
+            unread_summary = pool.unread_summary_for_suggestions(max_papers=10)
+        else:
+            unread_summary = "(无)"
+        log(f"TASK {self.task_id} RESPOND: unread_summary={len(unread_summary)} chars")
+
         respond_prompt = RESPOND_PROMPT.format(
             n_fulltext=len(self.ctx.fulltext_sources),
             fulltext_list=fulltext_list,
             n_nofulltext=len(self.ctx.nofulltext_sources),
             nofulltext_list=nofulltext_list,
+            unread_summary=unread_summary,
         )
 
         # 干净的上下文：无 tool_call / tool_result 格式，LLM 不会产生 XML 条件反射
@@ -985,10 +1202,50 @@ class AgentStateMachine:
         clean_messages.append({"role": "system", "content": respond_prompt})
         clean_messages.append(user_msg or {"role": "user", "content": "请基于以上论文回答。"})
 
-        resp_text = await self._try_respond_clean(clean_messages, "respond")
-        if resp_text:
-            yield AgentEvent.text(resp_text)
-            return
+        resp_text = ""
+        async for event in self._run_native_round(
+            self.task_id, 0, clean_messages, force_answer=True,
+        ):
+            if event.type == "_tool_call":
+                log(f"TASK {self.task_id} RESPOND: LLM emitted tool_call, "
+                    f"discarding {len(resp_text)} chars, retrying with stronger prompt")
+                clean_messages.append({
+                    "role": "system",
+                    "content": "❌ 刚才你输出了工具调用标记。你现在必须在回答阶段，严禁调用任何工具。"
+                               "请直接输出纯文本回答，不要使用 <tool_call> 或任何 XML 标签。",
+                })
+                resp_text = ""
+                async for event2 in self._run_native_round(
+                    self.task_id, 0, clean_messages, force_answer=True,
+                ):
+                    if event2.type == "_tool_call":
+                        log(f"TASK {self.task_id} RESPOND: retry also failed")
+                        resp_text = ""
+                        break
+                    if event2.type == "text":
+                        chunk = event2.data.get("content", "")
+                        resp_text += chunk
+                        yield event2
+                break
+            if event.type == "text":
+                chunk = event.data.get("content", "")
+                resp_text += chunk
+                yield event
+
+        if resp_text.strip():
+            # 检测 XML 污染
+            xml_tags = ["<tool_call", "<tool_calls>", "antha:tool_call",
+                        "<｜｜DSML｜｜tool_call", "<invoke"]
+            if not any(tag in resp_text for tag in xml_tags):
+                return
+            log(f"TASK {self.task_id} RESPOND: text contains XML pollution, stripping")
+            resp_text = re.sub(
+                r'<(?:anth:)?tool_calls?>.*?</(?:anth:)?tool_calls?>',
+                '', resp_text, flags=re.DOTALL
+            ).strip()
+            if resp_text:
+                yield AgentEvent.text(resp_text)
+                return
 
         # 兜底
         log(f"TASK {self.task_id} RESPOND: all attempts failed, using fallback")

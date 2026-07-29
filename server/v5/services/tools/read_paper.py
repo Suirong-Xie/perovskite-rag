@@ -38,27 +38,40 @@ from ..arxiv_service import clean_paper_text
 
 
 def _extract_pdf_text(pdf_path: str) -> str:
-    """提取 PDF 文本: PyMuPDF4LLM 优先, fallback pdftotext。"""
+    """提取 PDF 文本: PyMuPDF4LLM (OCR 已关闭), pdftotext fallback。"""
     if _HAS_PYMUPDF4LLM:
         try:
-            md_text = pymupdf4llm.to_markdown(pdf_path)
-            cleaned = _get_clean_md()(md_text)
-            if len(cleaned) >= 100:
-                return cleaned[:5000]
+            result = _extract_with_pymupdf4llm(pdf_path)
+            if result:
+                return result
         except Exception:
             pass
 
     # Fallback: pdftotext
-    proc = subprocess.run(
-        ["pdftotext", pdf_path, "-"],
-        capture_output=True, text=True, timeout=30,
-    )
-    if proc.returncode == 0 and proc.stdout:
-        cleaned = clean_paper_text(proc.stdout)
-        if len(cleaned) < len(proc.stdout) * 0.5:
-            return proc.stdout[:5000]
+    try:
+        proc = subprocess.run(
+            ["pdftotext", pdf_path, "-"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode == 0 and proc.stdout and len(proc.stdout.strip()) >= 200:
+            cleaned = clean_paper_text(proc.stdout)
+            return cleaned[:5000] if len(cleaned) >= 200 else proc.stdout[:5000]
+    except Exception:
+        pass
+
+    return ""
+
+
+def _extract_with_pymupdf4llm(pdf_path: str) -> str:
+    """PyMuPDF4LLM 结构化 Markdown 提取，OCR 关闭。"""
+    import pymupdf4llm
+    md_text = pymupdf4llm.to_markdown(pdf_path, use_ocr=False)
+    cleaned = _get_clean_md()(md_text)
+    if len(cleaned) >= 100:
         return cleaned[:5000]
     return ""
+
+
 
 
 # ── read_paper ──

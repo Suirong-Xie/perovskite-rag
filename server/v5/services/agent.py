@@ -214,12 +214,15 @@ async def run_agent_loop(
     sid: str,
     user_message: str,
     history: list[dict],
+    pool=None,
+    followup_question: str = "",
 ) -> AsyncGenerator[AgentEvent, None]:
     """
-    Agent 循环 — 状态机驱动 (v5.1)。
+    Agent 循环 — 状态机驱动 (v5.2 渐进式)。
 
     状态机流程:
-      RETRIEVE → READ → RESPOND
+      首轮: RETRIEVE → QUICK_READ → RESPOND
+      跟进: DEEP_READ → RESPOND
 
     每个状态有独立预算，工具失败不计入预算。
 
@@ -257,6 +260,8 @@ async def run_agent_loop(
         execute_tool_fn=_execute_tool_for_sm,
         run_native_round_fn=_run_native_round_for_sm,
         AGENT_SYSTEM_PROMPT=AGENT_SYSTEM_PROMPT,
+        paper_pool=pool,
+        followup_question=followup_question,
     )
 
     # 委托给状态机，直接转发所有事件
@@ -276,13 +281,14 @@ def _execute_tool_for_sm(tool_call: ToolCall) -> tuple:
 
 async def _run_native_round_for_sm(
     task_id: str, round_label, messages: list[dict], force_answer: bool = False,
-    allowed_tools: list = None,
+    allowed_tools: list = None, max_tokens: int = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """适配 _run_native_round 给状态机使用。"""
     round_num = 0 if isinstance(round_label, str) else round_label
     async for event in _run_native_round(task_id, round_num, messages,
                                           force_answer=force_answer,
-                                          allowed_tools=allowed_tools):
+                                          allowed_tools=allowed_tools,
+                                          max_tokens=max_tokens):
         yield event
 
 
@@ -290,6 +296,7 @@ async def _run_native_round(
     task_id: str, round_num: int, messages: list[dict],
     force_answer: bool = False,
     allowed_tools: list = None,
+    max_tokens: int = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """使用原生 Function Calling 执行一轮 LLM 调用。
     实时流式推送 text content，完成后检测 tool_calls。
@@ -308,7 +315,7 @@ async def _run_native_round(
     else:
         active_tools = TOOLS
     try:
-        async for event in chat_completion_with_tools(messages, active_tools):
+        async for event in chat_completion_with_tools(messages, active_tools, max_tokens=max_tokens):
             if event["type"] == "text":
                 full_response += event["content"]
                 yield AgentEvent.text(event["content"])
@@ -325,12 +332,13 @@ async def _run_native_round(
         return
 
     if tool_calls:
-        log(f"TASK {task_id} Round {round_num} TOOL (native): {tool_calls[0]['name']}")
+        names = [tc.get("name", "?") for tc in tool_calls]
+        log(f"TASK {task_id} Round {round_num} TOOLS (native): {names}")
 
-        # 取第一个 tool_call（后续可扩展并行执行）
-        tc = tool_calls[0]
-        tc["arguments"]["_tool_call_id"] = tc.get("id", f"call_{round_num}")
-        yield AgentEvent("_tool_call", {"tool_call": ToolCall(tc["name"], tc["arguments"])})
+        # 返回所有 tool_calls（状态机会批量并行执行）
+        for tc in tool_calls:
+            tc["arguments"]["_tool_call_id"] = tc.get("id", f"call_{round_num}")
+            yield AgentEvent("_tool_call", {"tool_call": ToolCall(tc["name"], tc["arguments"])})
         return
 
     # 没有 tool_call → 最终回答（文本已在流式推送中实时发送）

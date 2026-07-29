@@ -10,7 +10,7 @@ import subprocess
 import asyncio
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import StreamingResponse
-from ..core.schemas import ChatRequest, TaskInfo
+from ..core.schemas import AgentEvent, ChatRequest, TaskInfo
 from ..core.config import AGENT_MAX_ROUNDS
 from ..services.session_store import store
 from ..services.translator import translate_to_english
@@ -47,14 +47,52 @@ def _build_thinking_chain(chunks: list[str]) -> str:
     return "\n\n".join(chain_parts)
 
 
+# ── 后续建议解析 ──
+
+_SUGGESTIONS_PATTERN = re.compile(
+    r'---\s*\n💡\s*\*?\*?继续深入\*?\*?[：:]\s*\n((?:\d+\.\s*[^\n]+\n?)+)',
+    re.DOTALL,
+)
+
+
+def _parse_suggestions(text: str) -> list[str]:
+    """从回答中提取后续建议列表。"""
+    suggestions = []
+    match = _SUGGESTIONS_PATTERN.search(text)
+    if match:
+        block = match.group(1)
+        for line in block.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            # 去掉编号前缀 "1. " "2. " 等
+            cleaned = re.sub(r'^\d+\.\s*', '', line).strip()
+            if cleaned and len(cleaned) > 5:
+                suggestions.append(cleaned)
+    # Fallback: 如果没匹配到格式，尝试匹配问号结尾的行
+    if not suggestions:
+        for line in text.split("\n"):
+            line = line.strip()
+            if line.endswith("?") and len(line) > 10:
+                suggestions.append(line)
+    return suggestions[:3]
+
+
+def _strip_suggestions_block(text: str) -> str:
+    """移除回答中的建议块，保持回答干净。"""
+    return _SUGGESTIONS_PATTERN.sub("", text).rstrip()
+
+
 # ── 核心 Agent 生成任务 ──
 
 
-async def run_agent_generation(task_id: str, sid: str, user_message: str):
+async def run_agent_generation(task_id: str, sid: str, user_message: str, pool=None,
+                               pool_existed: bool = False):
     """后台运行 Agent 循环，将事件转为 chunks 写入 _tasks[task_id].chunks。
 
-    新增：累积 search_results 事件到 TaskInfo.sources（系统链路），
-    Agent 完成后验证 PDF、做高亮标注、推送 sources 事件到前端。
+    Args:
+        pool: SessionPaperPool | None — 会话级论文池（跨轮复用）
+        pool_existed: 论文池是否从磁盘加载（vs 本次预搜索新建）
     """
     full_content = ""
     in_respond = False  # 只有 RESPOND 阶段的 text 才累积到最终回答
@@ -67,14 +105,21 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
 
         history = store.get_history(sid)
 
-        async for event in run_agent_loop(task_id, sid, user_message, history):
+        # 判断是否为跟进问题（只有从磁盘加载的已有论文池才算跟进）
+        is_followup = pool is not None and pool_existed and pool.unread_count > 0
+        # 清理用户消息（去掉预搜索注入文本）
+        clean_msg = user_message.split("系统已为你预检索")[0].strip() if "系统已为你预检索" in user_message else user_message
+        followup_q = clean_msg if is_followup else ""
+
+        async for event in run_agent_loop(task_id, sid, user_message, history,
+                                           pool=pool, followup_question=followup_q):
             async with _tasks_lock:
                 if _tasks[task_id].cancelled:
                     log(f"TASK {task_id} cancelled mid-agent")
                     return
 
-            # 推入 SSE queue（零延迟推送）
-            if queue:
+            # 推入 SSE queue（done 事件延后到 sources 处理完毕再发）
+            if queue and event.type != "done":
                 await queue.put(event)
 
             if event.type == "thinking":
@@ -138,6 +183,20 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
                 return
 
         log(f"TASK {task_id} agent done: sid={sid} total_chars={len(full_content)}")
+
+        # ── 解析后续建议（从回答末尾提取）──
+        if full_content:
+            suggestions = _parse_suggestions(full_content)
+            if suggestions:
+                log(f"TASK {task_id} SUGGESTIONS: {len(suggestions)} found")
+                async with _tasks_lock:
+                    _tasks[task_id].suggestions_json = json.dumps(
+                        suggestions, ensure_ascii=False
+                    )
+                if queue:
+                    await queue.put(AgentEvent.suggestions(suggestions))
+            # 从 full_content 中移除建议块（保持回答干净）
+            full_content = _strip_suggestions_block(full_content)
 
         # ── 系统链路：从 TaskInfo.sources 验证 PDF、做高亮、构建 sources 列表 ──
         async with _tasks_lock:
@@ -262,8 +321,12 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
         thinking_chain = _build_thinking_chain(_tasks[task_id].chunks)
 
         if full_content:
+            suggestions = None
+            if _tasks[task_id].suggestions_json:
+                suggestions = json.loads(_tasks[task_id].suggestions_json)
             store.append_message(sid, "assistant", full_content, validated_sources,
-                                 thinking_chain=thinking_chain)
+                                 thinking_chain=thinking_chain,
+                                 suggestions=suggestions)
 
         # 存储验证后的 sources 到 task，供 SSE 端点推送
         if validated_sources:
@@ -271,6 +334,13 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str):
                 _tasks[task_id].sources_json = json.dumps(
                     validated_sources, ensure_ascii=False
                 )
+
+        # 推送 done 事件（在 sources 和 suggestions 都准备好之后）
+        if queue:
+            if _tasks[task_id].suggestions_json:
+                await queue.put(AgentEvent.suggestions(
+                    json.loads(_tasks[task_id].suggestions_json)))
+            await queue.put(AgentEvent.done())
 
         async with _tasks_lock:
             _tasks[task_id].done = True
@@ -293,10 +363,27 @@ async def run_chat_pipeline(task_id: str, sid: str, req: ChatRequest):
     的也是真实 File ID，不会凭空编造。
     """
     from ..services.retrieval import search_papers
+    from ..services.paper_pool import SessionPaperPool
+
+    # 0. 加载会话级论文池
+    pool = None
+    pool_existed = False  # 区分 "从磁盘加载的已有池" vs "本次新建的"
+    pool_data = store.get_paper_pool(sid)
+    if pool_data:
+        pool = SessionPaperPool.from_dict(pool_data)
+        pool_existed = True
+        log(f"TASK {task_id} POOL: loaded {pool.total_count} papers "
+            f"(read={pool.read_count}, unread={pool.unread_count})")
 
     # 1. 翻译（中文 → 英文）
     search_hint = await translate_to_english(req.message)
     log(f"TASK {task_id} TRANSLATE: '{req.message[:50]}' → '{search_hint[:80]}'")
+
+    # 话题漂移检测：如果新问题和论文池不相关，清空池
+    if pool and pool.total_count > 0:
+        if pool.detect_topic_drift(search_hint):
+            log(f"TASK {task_id} POOL: topic drift detected, resetting pool")
+            pool = None
 
     # 2. 系统预搜索：查询扩展 + BM25 混合检索，结果存入 TaskInfo.sources
     initial_results = search_papers(search_hint, top_k=5, expand=True, hybrid=True)
@@ -316,34 +403,32 @@ async def run_chat_pipeline(task_id: str, sid: str, req: ChatRequest):
         log(f"TASK {task_id} PRE-SEARCH: {len(initial_results)} results, "
             f"total {len(seen)} unique sources")
 
-    # 3. 构建用户消息：注入预搜索结果（区分有 PDF 全文 vs 仅 DOI）
+        # 预搜索结果加入论文池
+        if pool is None:
+            pool = SessionPaperPool(session_id=sid)
+        pool.add_from_search(initial_results, query=search_hint)
+        log(f"TASK {task_id} POOL: after pre-search → {pool.total_count} papers")
+
+    # 3. 构建用户消息：注入预搜索结果（精简版，减少 LLM prompt 负担）
     user_message = req.message
     if initial_results:
         primary = [r for r in initial_results if r.get("has_pdf")]
         supplementary = [r for r in initial_results if not r.get("has_pdf")]
 
-        user_message += "\n\n系统已为你预检索了以下文献：\n"
+        user_message += "\n\n系统预检索文献：\n"
         if primary:
-            user_message += "\n📄 **可阅读全文的论文**（优先使用这些论文的信息回答）：\n"
-            for i, r in enumerate(primary):
+            user_message += "📄 全文可用: "
+            parts = []
+            for r in primary:
                 file_id = r.get("source", "").replace(".pdf", "")
-                pdf_link = f"/api/pdf/{file_id}"
-                user_message += (
-                    f"[P{i+1}] {r.get('journal_name', 'Unknown')} | "
-                    f"File ID: `{file_id}` | "
-                    f"PDF: {pdf_link}\n"
-                    f"    内容: {r.get('content', '')[:400]}\n\n"
-                )
+                parts.append(f"`{file_id}` ({r.get('journal_name', '?')})")
+            user_message += ", ".join(parts) + "\n"
         if supplementary:
-            user_message += "\n🔗 **仅有摘要/元数据的论文**（仅作参考，无法打开全文，回答中不要将其作为主要信息来源）：\n"
-            for i, r in enumerate(supplementary):
-                doi = r.get("_s2_doi", "")
-                doi_link = f"https://doi.org/{doi}" if doi else "(无 DOI)"
-                user_message += (
-                    f"[S{i+1}] {r.get('journal_name', 'Unknown')} | "
-                    f"DOI: {doi_link}\n"
-                    f"    摘要: {r.get('content', '')[:300]}\n\n"
-                )
+            user_message += "🔗 仅摘要: "
+            parts = []
+            for r in supplementary:
+                parts.append(r.get("journal_name", "?"))
+            user_message += ", ".join(parts) + "\n"
     elif search_hint != req.message:
         user_message += f"\n\n[搜索提示] 你可以用以下英文关键词来搜索: {search_hint}"
 
@@ -363,7 +448,13 @@ async def run_chat_pipeline(task_id: str, sid: str, req: ChatRequest):
                 pass
 
     # 4. Agent 循环：LLM 自主搜索/阅读/回答（预搜索结果已在上下文中）
-    await run_agent_generation(task_id, sid, user_message)
+    await run_agent_generation(task_id, sid, user_message, pool, pool_existed=pool_existed)
+
+    # 5. 保存论文池（跨轮复用）
+    if pool and pool.total_count > 0:
+        store.save_paper_pool(sid, pool.to_dict())
+        log(f"TASK {task_id} POOL: saved {pool.total_count} papers "
+            f"(read={pool.read_count}, unread={pool.unread_count})")
 
 
 # ── API 端点 ──
@@ -427,7 +518,17 @@ async def chat_stream(task_id: str, offset: int = Query(0, ge=0)):
 
                 if event.type == "text":
                     yield f"data: {json.dumps({'type': 'text', 'content': event.data['content']})}\n\n"
+                elif event.type == "state":
+                    yield f"data: {json.dumps({'type': 'state', 'data': event.data})}\n\n"
+                elif event.type == "tool_call":
+                    yield f"data: {json.dumps({'type': 'tool_call', 'data': event.data})}\n\n"
+                elif event.type == "tool_result":
+                    yield f"data: {json.dumps({'type': 'tool_result', 'data': event.data})}\n\n"
+                elif event.type == "suggestions":
+                    yield f"data: {json.dumps({'type': 'suggestions', 'data': event.data['items']})}\n\n"
                 elif event.type == "done":
+                    if task.suggestions_json:
+                        yield f"data: {json.dumps({'type': 'suggestions', 'data': json.loads(task.suggestions_json)})}\n\n"
                     if task.sources_json and not sources_sent:
                         sources_sent = True
                         yield f"data: {json.dumps({'type': 'sources', 'data': json.loads(task.sources_json)})}\n\n"

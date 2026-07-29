@@ -52,8 +52,8 @@ class TestStateContextBasics:
         states = [
             (AgentState.RETRIEVE, "enter"),
             (AgentState.RETRIEVE, "search", "keyword: stability"),
-            (AgentState.READ, "enter"),
-            (AgentState.READ, "read", "paper 1"),
+            (AgentState.QUICK_READ, "enter"),
+            (AgentState.QUICK_READ, "read", "paper 1"),
             (AgentState.RESPOND, "enter"),
         ]
         for s, a, *d in states:
@@ -76,11 +76,11 @@ class TestStateContextBasics:
 
     def test_state_summary_with_data(self, preset_context):
         """State summary should reflect current context state."""
-        preset_context.log_state(AgentState.READ, "read", "paper read")
+        preset_context.log_state(AgentState.QUICK_READ, "read", "paper read")
         preset_context.search_count = 3
         preset_context.read_success_count = 2
         pres = preset_context.state_summary()
-        assert pres["current_state"] == "read"
+        assert pres["current_state"] == "quick_read"
         assert pres["searches_done"] == 3
         assert pres["papers_fulltext"] == 2
         assert pres["papers_nofulltext"] == 1
@@ -325,8 +325,8 @@ class TestConstants:
     """Validate that critical thresholds are within reasonable bounds."""
 
     def test_min_fulltext_papers_reasonable(self):
-        assert MIN_FULLTEXT_PAPERS >= 5, \
-            "Should require at least 5 fulltext papers for quality answers"
+        assert MIN_FULLTEXT_PAPERS >= 2, \
+            "Should require at least 2 fulltext papers (progressive mode)"
         assert MIN_FULLTEXT_PAPERS <= 20, \
             "Should not be unrealistically high"
 
@@ -345,10 +345,10 @@ class TestConstants:
     def test_budgets_have_required_keys(self):
         assert "retrieve_llm" in BUDGETS
         assert "retrieve_search" in BUDGETS
-        assert "read_papers" in BUDGETS
+        assert "quick_read" in BUDGETS
         assert BUDGETS["retrieve_llm"] > 0
         assert BUDGETS["retrieve_search"] > 0
-        assert BUDGETS["read_papers"] > 0
+        assert BUDGETS["quick_read"] > 0
 
 
 # ═══════════════════════════════════════════════════════════════════
