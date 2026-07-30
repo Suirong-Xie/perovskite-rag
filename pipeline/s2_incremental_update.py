@@ -66,6 +66,13 @@ REVIEW_KW = [
 
 def log(msg):
     print(f"[S2-Up] {msg}", flush=True)
+    # 也写到专门的 progress 文件，方便外部监控
+    try:
+        with open("/data1/perovskite-rag/logs/s2_update_progress.txt", "a") as _pf:
+            import datetime
+            _pf.write(f"{datetime.datetime.now():%H:%M:%S} {msg}\n")
+    except Exception:
+        pass
 
 
 def doi_from_filename(fname: str) -> Optional[str]:
@@ -156,24 +163,37 @@ def scan_new_pdfs(doi_index: dict):
 # ═══════════════════════════════════════════════════════════
 
 def extract_pdf_text(pdf_path: str) -> str:
-    """PyMuPDF4LLM 提取文本，无 OCR。"""
-    try:
-        import pymupdf4llm
-        md = pymupdf4llm.to_markdown(pdf_path, use_ocr=False)
-        # 清理
-        from s2_chunk_and_embed import clean_markdown_text
-        return clean_markdown_text(md)[:12000]
-    except Exception as e:
-        log(f"  PyMuPDF4LLM failed for {pdf_path}: {e}")
-        # fallback: fitz
+    """PyMuPDF4LLM 提取文本，无 OCR，30s 超时。"""
+    import concurrent.futures
+
+    def _extract():
         try:
-            import fitz
-            doc = fitz.open(pdf_path)
-            pages = [page.get_text("text") for page in doc if page.get_text("text").strip()]
-            doc.close()
-            return "\n\n".join(pages)[:12000]
-        except Exception:
-            return ""
+            import pymupdf4llm
+            md = pymupdf4llm.to_markdown(pdf_path, use_ocr=False)
+            from s2_chunk_and_embed import clean_markdown_text
+            return clean_markdown_text(md)[:12000]
+        except Exception as e:
+            return f"__ERROR__:{e}"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_extract)
+        try:
+            result = future.result(timeout=30)
+            if result and not result.startswith("__ERROR__"):
+                return result
+        except concurrent.futures.TimeoutError:
+            pass
+
+    # fallback: fitz
+    log(f"  PyMuPDF4LLM timeout/skip, trying fitz fallback...")
+    try:
+        import fitz
+        doc = fitz.open(pdf_path)
+        pages = [page.get_text("text") for page in doc if page.get_text("text").strip()]
+        doc.close()
+        return "\n\n".join(pages)[:12000]
+    except Exception:
+        return ""
 
 
 # ═══════════════════════════════════════════════════════════
@@ -228,38 +248,74 @@ def chunk_text(text: str, max_retries: int = 3) -> list[str]:
 # Step 5: Process new PDFs (chunk + classify)
 # ═══════════════════════════════════════════════════════════
 
-def process_pdfs(pdf_list: list, paper_type_hint: str = ""):
-    """对 PDF 列表做提取+切分，返回 chunk 记录列表。"""
-    results = []
-    total = len(pdf_list)
-    for i, (fpath, doi, fsize) in enumerate(pdf_list):
-        log(f"  [{i+1}/{total}] {os.path.basename(fpath)[:70]} ({fsize/1024:.0f}KB)")
+def _process_one_pdf(args):
+    """处理单个 PDF（用于并行）。返回 (chunk_records, doi, status)。"""
+    fpath, doi, fsize = args
+    fname = os.path.basename(fpath)
+    try:
         text = extract_pdf_text(fpath)
         if not text or len(text) < 200:
-            log(f"    SKIP: insufficient text ({len(text)} chars)")
-            continue
+            return [], doi, "SKIP_EMPTY"
 
         chunks = chunk_text(text)
-        ptype = paper_type_hint or classify_paper(os.path.basename(fpath), text)
-        journal = guess_journal(os.path.basename(fpath))
+        ptype = classify_paper(fname, text)
+        journal = guess_journal(fname)
 
-        for chunk_text_content in chunks:
-            if len(chunk_text_content) < 200:
+        recs = []
+        for c in chunks:
+            if len(c) < 200:
                 continue
-            results.append({
-                "source": os.path.basename(fpath),
-                "content": chunk_text_content,
+            recs.append({
+                "source": fname,
+                "content": c,
                 "journal": journal,
                 "journal_rank": journal_rank(journal),
                 "_s2_doi": doi,
                 "_s2_paper_id": doi_to_paper_id(doi),
-                "_s2_year": extract_year(os.path.basename(fpath)),
+                "_s2_year": extract_year(fname),
                 "_s2_tier": 1,
                 "_s2_citation_count": 0,
                 "_extract_method": "pymupdf4llm",
                 "_paper_type": ptype,
             })
-        log(f"    → {len(chunks)} chunks, type={ptype}")
+        return recs, doi, f"OK:{len(recs)}:{ptype}"
+    except Exception as e:
+        return [], doi, f"ERROR:{e}"
+
+
+def process_pdfs(pdf_list: list, workers: int = 8):
+    """并行处理 PDF 列表，返回 chunk 记录列表。"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    results = []
+    total = len(pdf_list)
+    done = 0
+    ok, skip, err = 0, 0, 0
+    start_time = time.time()
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_process_one_pdf, args): args for args in pdf_list}
+        for future in as_completed(futures):
+            recs, doi, status = future.result()
+            done += 1
+            if status.startswith("OK"):
+                ok += 1
+                parts = status.split(":")
+                fname = os.path.basename(futures[future][0])[:60]
+                log(f"  [{done}/{total}] {fname} → {parts[1]} chunks, {parts[2]}")
+                results.extend(recs)
+            elif status.startswith("SKIP"):
+                skip += 1
+            else:
+                err += 1
+
+            if done % 100 == 0:
+                elapsed = time.time() - start_time
+                rate = done / elapsed * 60
+                eta = (total - done) / rate if rate > 0 else 0
+                log(f"  PROGRESS: {done}/{total} ({done*100//total}%), "
+                    f"{rate:.0f}/min, ETA {eta:.0f}min, ok={ok} skip={skip} err={err}")
+
+    log(f"  DONE: {ok} OK, {skip} skip, {err} error, {len(results)} total chunks")
     return results
 
 
