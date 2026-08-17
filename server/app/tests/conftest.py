@@ -60,17 +60,17 @@ for pkg in _MOCK_PACKAGES:
     _make_mock_module(pkg)
 
 
-# Now safe to import pytest and v5 modules
+# Now safe to import pytest and app modules
 import pytest
 
-# Ensure v5 package is importable
+# Ensure app package is importable
 SERVER_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-V5_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if V5_DIR not in sys.path:
-    sys.path.insert(0, V5_DIR)
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
 
 
 @pytest.fixture
@@ -98,7 +98,7 @@ def mock_messages():
 @pytest.fixture
 def state_context():
     """Fresh StateContext for testing."""
-    from v5.services.agent_sm import StateContext
+    from app.services.agent_sm import StateContext
     return StateContext()
 
 

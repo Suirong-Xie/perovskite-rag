@@ -7,13 +7,13 @@ PerovskiteGPT v1.5 — Sunny-RAG 科研 Agent（模块化架构）
   - routers/  → API 路由（chat, sessions, papers）
   - web_ui.html → 前端
 
-与 v4（server/v4/server.py）兼容并存，v5 默认端口 8002。
+与 v4（server/v4/server.py）兼容并存，app 默认端口 8002。
 """
 import os
 import sys
 from contextlib import asynccontextmanager
 
-# 确保 server/ 在 sys.path，使 v5 可作为包导入
+# 确保 server/ 在 sys.path，使 app 可作为包导入
 SERVER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
@@ -23,9 +23,9 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from v5.core.config import V5_DIR as V5_PATH, PAPERS_DIR
-from v5.services.session_store import store
-from v5.routers import chat, sessions, papers
+from app.core.config import APP_DIR as APP_PATH, PAPERS_DIR
+from app.services.session_store import store
+from app.routers import chat, sessions, papers
 
 
 @asynccontextmanager
@@ -48,13 +48,13 @@ app.include_router(sessions.router)
 app.include_router(papers.router)
 
 # 静态资源
-app.mount("/static", StaticFiles(directory=str(V5_PATH / "static")), name="static")
+app.mount("/static", StaticFiles(directory=str(APP_PATH / "static")), name="static")
 
 
 # ── 前端 ──
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    html_path = V5_PATH / "web_ui.html"
+    html_path = APP_PATH / "web_ui.html"
     if html_path.exists():
         return HTMLResponse(html_path.read_text(encoding="utf-8"))
     return HTMLResponse("<h1>PerovskiteGPT v1.5</h1><p>web_ui.html 尚未创建</p>")

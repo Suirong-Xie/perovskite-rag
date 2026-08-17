@@ -9,11 +9,11 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from v5.services.tools import (
+from app.services.tools import (
     ALL_TOOLS, EXECUTORS,
     RETRIEVE_TOOLS, READ_TOOLS, filter_tools,
 )
-from v5.core.schemas import ToolCall, ToolResult
+from app.core.schemas import ToolCall, ToolResult
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -145,14 +145,14 @@ class TestToolExecution:
 
     def test_search_papers_with_empty_query(self):
         """search_papers with empty query should return error."""
-        from v5.services.tools.search_local import execute
+        from app.services.tools.search_local import execute
         result, raw_data = execute({"query": ""})
         assert result.error is not None
         assert "query" in result.error.lower()
 
     def test_search_papers_with_valid_query(self):
         """search_papers with a valid query should return results."""
-        from v5.services.tools.search_local import execute
+        from app.services.tools.search_local import execute
         result, raw_data = execute({"query": "perovskite solar cell stability"})
         assert result.error is None
         assert result.output is not None
@@ -160,7 +160,7 @@ class TestToolExecution:
 
     def test_search_papers_top_k_bounded(self):
         """top_k should be capped at 10."""
-        from v5.services.tools.search_local import execute
+        from app.services.tools.search_local import execute
         result, raw_data = execute({"query": "perovskite", "top_k": "100"})
         # Should be capped
         if raw_data:
@@ -169,47 +169,47 @@ class TestToolExecution:
 
     def test_read_paper_empty_source(self):
         """read_paper with empty source should return error."""
-        from v5.services.tools.read_paper import execute_read_paper
+        from app.services.tools.read_paper import execute_read_paper
         result, raw_data = execute_read_paper({"source": ""})
         assert result.error is not None
 
     def test_read_paper_nonexistent_pdf(self):
         """read_paper with a nonexistent PDF should return error."""
-        from v5.services.tools.read_paper import execute_read_paper
+        from app.services.tools.read_paper import execute_read_paper
         result, raw_data = execute_read_paper({"source": "nonexistent_99999.pdf"})
         # Should say no PDF found (could be error or in output)
         assert (result.error is not None or "无全文" in (result.output or ""))
 
     def test_extract_data_empty_source(self):
-        from v5.services.tools.extract_data import execute
+        from app.services.tools.extract_data import execute
         result, raw_data = execute({"source": ""})
         assert result.error is not None
 
     def test_compare_papers_empty_sources(self):
-        from v5.services.tools.compare import execute
+        from app.services.tools.compare import execute
         result, raw_data = execute({"sources": ""})
         assert result.error is not None
 
     def test_compare_papers_single_source(self):
-        from v5.services.tools.compare import execute
+        from app.services.tools.compare import execute
         result, raw_data = execute({"sources": "single_paper.pdf"})
         assert "Need at least 2 papers" in (result.output or "")
 
     def test_compare_papers_max_five(self):
         """compare_papers should cap at 5 papers."""
-        from v5.services.tools.compare import execute
+        from app.services.tools.compare import execute
         result, raw_data = execute({
             "sources": "a.pdf,b.pdf,c.pdf,d.pdf,e.pdf,f.pdf,g.pdf"
         })
         assert result.error is None  # should not error
 
     def test_search_arxiv_empty_query(self):
-        from v5.services.tools.search_arxiv import execute
+        from app.services.tools.search_arxiv import execute
         result, raw_data = execute({"query": ""})
         assert result.error is not None
 
     def test_search_s2_empty_query(self):
-        from v5.services.tools.search_s2 import execute
+        from app.services.tools.search_s2 import execute
         result, raw_data = execute({"query": ""})
         assert result.error is not None
 
@@ -299,7 +299,7 @@ class TestRegisterTool:
     """Test the dynamic tool registration API."""
 
     def test_register_new_tool(self):
-        from v5.services.tools import ALL_TOOLS as TOOLS, EXECUTORS as TOOL_EXECUTORS
+        from app.services.tools import ALL_TOOLS as TOOLS, EXECUTORS as TOOL_EXECUTORS
 
         def dummy_executor(args):
             return (ToolResult(ToolCall("test_tool", args), "ok"), {})

@@ -10,7 +10,7 @@ import re
 import unicodedata
 from pathlib import Path
 from collections import defaultdict
-from ..core.config import V5_DIR
+from ..core.config import APP_DIR
 
 
 def log(msg: str):
@@ -89,7 +89,7 @@ def extract_highlight_meta(pdf_path: str, chunk_texts: list) -> dict:
     import fitz
 
     stem = Path(pdf_path).stem
-    meta_path = V5_DIR / "annotated_pdfs" / f"{stem}_meta.json"
+    meta_path = APP_DIR / "annotated_pdfs" / f"{stem}_meta.json"
 
     # 缓存命中
     if meta_path.exists():
@@ -231,7 +231,7 @@ def extract_highlight_meta(pdf_path: str, chunk_texts: list) -> dict:
     meta = {"pages": sorted(all_pages), "chunks": chunk_meta}
 
     # 缓存
-    (V5_DIR / "annotated_pdfs").mkdir(parents=True, exist_ok=True)
+    (APP_DIR / "annotated_pdfs").mkdir(parents=True, exist_ok=True)
     with open(meta_path, "w") as f:
         json.dump(meta, f, ensure_ascii=False)
 

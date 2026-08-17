@@ -6,7 +6,7 @@ PerovskiteGPT v1.5 — 向量检索核心
 
 用法:
   作为模块: from .vector_search import search
-  CLI 测试:  python -m server.v5.services.vector_search "查询文本" --top_k 5
+  CLI 测试:  python -m server.app.services.vector_search "查询文本" --top_k 5
 """
 
 import json

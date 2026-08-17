@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from v5.core.schemas import AgentEvent, TaskInfo, ChatRequest
+from app.core.schemas import AgentEvent, TaskInfo, ChatRequest
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -472,23 +472,23 @@ class TestSafetyValves:
     """Test that safety valves and budget limits are enforced."""
 
     def test_max_total_tool_calls(self):
-        from v5.services.agent_sm import MAX_TOTAL_TOOL_CALLS
+        from app.services.agent_sm import MAX_TOTAL_TOOL_CALLS
         assert MAX_TOTAL_TOOL_CALLS > 0
         assert MAX_TOTAL_TOOL_CALLS <= 50  # reasonable bound
 
     def test_max_rejected_in_read(self):
-        from v5.services.agent_sm import MAX_REJECTED_IN_READ
+        from app.services.agent_sm import MAX_REJECTED_IN_READ
         assert MAX_REJECTED_IN_READ >= 1
         assert MAX_REJECTED_IN_READ <= 5
 
     def test_max_loops_from_agent(self):
-        from v5.core.config import AGENT_MAX_ROUNDS
+        from app.core.config import AGENT_MAX_ROUNDS
         assert AGENT_MAX_ROUNDS > 0
         assert AGENT_MAX_ROUNDS <= 20
 
     def test_retrieve_budget_multiplier(self):
         """RETRIEVE has 2x multiplier on LLM rounds vs budget."""
-        from v5.services.agent_sm import BUDGETS
+        from app.services.agent_sm import BUDGETS
         max_llm = BUDGETS["retrieve_llm"] * 2
         max_search = BUDGETS["retrieve_search"]
         assert max_llm > 0

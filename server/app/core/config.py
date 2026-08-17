@@ -13,11 +13,11 @@ if _dotenv_path.exists():
 
 # ── 路径 ──
 BASE_DIR = Path(os.getenv("PEROVSKITE_RAG_BASE", "/data1/perovskite-rag"))
-V5_DIR = BASE_DIR / "server/v5"
+APP_DIR = BASE_DIR / "server/app"
 VECTOR_DB_DIR = BASE_DIR / "data/vector_db"
-SESSIONS_FILE = V5_DIR / "sessions.json"
-SESSIONS_DIR = V5_DIR / "sessions"
-ANNOTATED_DIR = V5_DIR / "annotated_pdfs"
+SESSIONS_FILE = APP_DIR / "sessions.json"
+SESSIONS_DIR = APP_DIR / "sessions"
+ANNOTATED_DIR = APP_DIR / "annotated_pdfs"
 
 # ── PDF 论文目录 ──
 PAPERS_DIR = Path(os.getenv("PAPERS_DIR", "/data/data/pkb/01_raw_data/papers_pdf"))

@@ -22,7 +22,7 @@ PerovskiteGPT 是一个钙钛矿太阳能电池领域的 AI 研究助手。核�
 
 ```
 perovskite-rag/
-├── server/v5/                    # ← 当前主版本
+├── server/app/                    # ← 当前主版本
 │   ├── main.py                   # FastAPI 入口, 端口 8002
 │   ├── web_ui.html               # 前端单页 (~900 行)
 │   ├── core/
@@ -252,7 +252,7 @@ search_papers(query, top_k=5)
   │   ├─ 同义词替换 (stability→degradation, PCE↔efficiency...)
   │   └─ 截短版 (长问题→前5词)
   │
-  ├─ 2. 语义搜索 (server/v5/services/vector_search.py)
+  ├─ 2. 语义搜索 (server/app/services/vector_search.py)
   │   ├─ Ollama mxbai-embed-large → query vec (1024维)
   │   ├─ NumPy cosine: vectors.npy @ query_vec
   │   └─ 期刊加权 (Nature 1.5x → NatComm 1.05x)

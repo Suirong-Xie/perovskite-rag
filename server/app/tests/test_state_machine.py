@@ -5,7 +5,7 @@ Covers: StateContext, question/paper classification, fallback answer, state tran
 import pytest
 import re
 import time
-from v5.services.agent_sm import (
+from app.services.agent_sm import (
     StateContext, AgentState,
     _classify_question, _classify_paper,
     _build_fallback_answer,

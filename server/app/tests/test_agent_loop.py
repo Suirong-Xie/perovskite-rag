@@ -24,7 +24,7 @@ TOOL_CALL_PATTERN = re.compile(
 
 def parse_tool_call(text: str):
     """Replica of agent.parse_tool_call — exact same logic."""
-    from v5.core.schemas import ToolCall
+    from app.core.schemas import ToolCall
     match = TOOL_CALL_PATTERN.search(text)
     if not match:
         return None

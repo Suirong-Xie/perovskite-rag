@@ -32,11 +32,11 @@ logs/
 server/**/sessions/
 server/v4/sessions.json
 server/v4/sessions.json.bak
-server/v5/sessions.json
+server/app/sessions.json
 
 # ── Annotated PDFs (generated) ──
 server/v4/annotated_pdfs/
-server/v5/annotated_pdfs/
+server/app/annotated_pdfs/
 
 # ── Python Cache ──
 __pycache__/

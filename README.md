@@ -18,7 +18,7 @@
 
 ```
 perovskite-rag/
-├── server/v5/                    # ✅ 当前版本
+├── server/app/                    # ✅ 当前版本
 │   ├── main.py                   # FastAPI 入口, 端口 8002
 │   ├── web_ui.html               # 前端单页
 │   ├── core/                     # 基础层
@@ -69,7 +69,7 @@ perovskite-rag/
 ```bash
 cd /data1/perovskite-rag
 source .RAGenv/bin/activate
-python server/v5/main.py
+python server/app/main.py
 # → http://localhost:8002
 ```
 

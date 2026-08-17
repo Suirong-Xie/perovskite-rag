@@ -69,24 +69,24 @@ class TestEmptyInputs:
     """How does the system handle empty, None, or whitespace-only inputs?"""
 
     def test_classify_question_empty(self):
-        from v5.services.agent_sm import _classify_question
+        from app.services.agent_sm import _classify_question
         assert _classify_question("") == "broad"  # shouldn't crash
 
     def test_classify_question_whitespace(self):
-        from v5.services.agent_sm import _classify_question
+        from app.services.agent_sm import _classify_question
         assert _classify_question("   \t\n  ") == "broad"
 
     def test_classify_question_none_chars(self):
-        from v5.services.agent_sm import _classify_question
+        from app.services.agent_sm import _classify_question
         # Very unusual characters
         assert _classify_question("\x00\x01\x02") == "broad"
 
     def test_classify_paper_empty_meta(self):
-        from v5.services.agent_sm import _classify_paper
+        from app.services.agent_sm import _classify_paper
         assert _classify_paper("", {}) == "experimental"
 
     def test_classify_paper_none_title(self):
-        from v5.services.agent_sm import _classify_paper
+        from app.services.agent_sm import _classify_paper
         meta = {"title": None, "content_preview": None}
         assert _classify_paper("test.pdf", meta) == "experimental"
 
@@ -103,7 +103,7 @@ class TestEmptyInputs:
         assert _extract_text_without_tool_call("") == ""
 
     def test_fallback_answer_empty_sets(self):
-        from v5.services.agent_sm import _build_fallback_answer
+        from app.services.agent_sm import _build_fallback_answer
         result = _build_fallback_answer(set(), set())
         assert len(result) > 0
 
@@ -117,7 +117,7 @@ class TestBoundaries:
 
     def test_state_history_max_entries(self):
         """State history should handle many entries."""
-        from v5.services.agent_sm import StateContext, AgentState
+        from app.services.agent_sm import StateContext, AgentState
         ctx = StateContext()
         for i in range(1000):
             ctx.log_state(AgentState.RETRIEVE, f"action_{i}", f"detail_{i}")
@@ -125,7 +125,7 @@ class TestBoundaries:
 
     def test_long_query_expansion(self):
         """Very long queries should not crash expansion."""
-        from v5.services.retrieval import _expand_queries
+        from app.services.retrieval import _expand_queries
         long_query = "perovskite solar cell " * 50
         queries = _expand_queries(long_query)
         assert len(queries) >= 1
@@ -134,7 +134,7 @@ class TestBoundaries:
 
     def test_unicode_boundary(self):
         """Full-width/half-width characters should not confuse classification."""
-        from v5.services.agent_sm import _classify_question
+        from app.services.agent_sm import _classify_question
         # Full-width characters
         result = _classify_question("ＰＣＥ efficiency perovskite")
         assert result in ("broad", "specific")
@@ -182,7 +182,7 @@ class TestPromptIntegrity:
     """Verify that state prompts format correctly and contain all placeholders."""
 
     def test_retrieve_prompt_format(self):
-        from v5.services.agent_sm import RETRIEVE_PROMPT
+        from app.services.agent_sm import RETRIEVE_PROMPT
         # Should be formattable without error
         formatted = RETRIEVE_PROMPT.format(
             min_fulltext=8,
@@ -194,7 +194,7 @@ class TestPromptIntegrity:
         assert "paper1.pdf" in formatted
 
     def test_respond_prompt_format(self):
-        from v5.services.agent_sm import RESPOND_PROMPT
+        from app.services.agent_sm import RESPOND_PROMPT
         formatted = RESPOND_PROMPT.format(
             context_hint="",
             style_hint="",
@@ -209,7 +209,7 @@ class TestPromptIntegrity:
         assert "Nature_2023_test.pdf" in formatted
 
     def test_quick_read_prompt_format(self):
-        from v5.services.agent_sm import QUICK_READ_PROMPT
+        from app.services.agent_sm import QUICK_READ_PROMPT
         formatted = QUICK_READ_PROMPT.format(
             max_papers=3,
             paper_pool_summary="### 📝 综述论文\n  - test_review.pdf — Nature\n",
@@ -218,7 +218,7 @@ class TestPromptIntegrity:
         assert "test_review.pdf" in formatted
 
     def test_deep_read_prompt_format(self):
-        from v5.services.agent_sm import DEEP_READ_PROMPT
+        from app.services.agent_sm import DEEP_READ_PROMPT
         formatted = DEEP_READ_PROMPT.format(
             max_papers=4,
             followup_question="掺杂对稳定性的影响？",
@@ -234,7 +234,7 @@ class TestPromptIntegrity:
 
     def test_no_template_injection_possible(self):
         """Prompt templates should not allow format string injection via missing keys."""
-        from v5.services.agent_sm import RETRIEVE_PROMPT
+        from app.services.agent_sm import RETRIEVE_PROMPT
         # .format() raises KeyError when a placeholder is MISSING, not when extra keys present.
         # Python's .format() ignores extra kwargs. Test that required keys must be provided.
         with pytest.raises(KeyError):
@@ -254,19 +254,19 @@ class TestStateTransitions:
 
     def test_retrieve_to_read_condition(self):
         """RETRIEVE → READ when enough fulltext papers collected."""
-        from v5.services.agent_sm import MIN_FULLTEXT_PAPERS
+        from app.services.agent_sm import MIN_FULLTEXT_PAPERS
         fulltext_count = MIN_FULLTEXT_PAPERS  # exactly at threshold
         assert fulltext_count >= MIN_FULLTEXT_PAPERS
 
     def test_retrieve_stays_when_insufficient(self):
         """Should stay in RETRIEVE when not enough papers."""
-        from v5.services.agent_sm import MIN_FULLTEXT_PAPERS
+        from app.services.agent_sm import MIN_FULLTEXT_PAPERS
         fulltext_count = MIN_FULLTEXT_PAPERS - 1
         assert fulltext_count < MIN_FULLTEXT_PAPERS
 
     def test_read_to_retrieve_back_condition(self):
         """Should go back to RETRIEVE on consecutive fails and below min."""
-        from v5.services.agent_sm import MAX_CONSECUTIVE_FAILS, MIN_FULLTEXT_PAPERS
+        from app.services.agent_sm import MAX_CONSECUTIVE_FAILS, MIN_FULLTEXT_PAPERS
         fails = MAX_CONSECUTIVE_FAILS  # exactly at threshold
         fulltext = MIN_FULLTEXT_PAPERS - 1  # below minimum
         assert fails >= MAX_CONSECUTIVE_FAILS
@@ -274,20 +274,20 @@ class TestStateTransitions:
 
     def test_read_to_respond_when_enough(self):
         """Should proceed to RESPOND when enough fulltext regardless of fail count."""
-        from v5.services.agent_sm import MIN_FULLTEXT_PAPERS
+        from app.services.agent_sm import MIN_FULLTEXT_PAPERS
         fulltext = MIN_FULLTEXT_PAPERS + 2  # above threshold
         assert fulltext >= MIN_FULLTEXT_PAPERS
 
     def test_max_back_to_retrieve_enforced(self):
         """Cannot go back to RETRIEVE more than MAX_BACK_TO_RETRIEVE times."""
-        from v5.services.agent_sm import MAX_BACK_TO_RETRIEVE
+        from app.services.agent_sm import MAX_BACK_TO_RETRIEVE
         back_count = MAX_BACK_TO_RETRIEVE + 1  # exceeded
         can_go_back = back_count < MAX_BACK_TO_RETRIEVE
         assert not can_go_back
 
     def test_question_type_affects_budget(self):
         """Specific questions should skip reviews, broad should include them."""
-        from v5.services.agent_sm import BUDGETS
+        from app.services.agent_sm import BUDGETS
         max_papers = BUDGETS["quick_read"]
 
         # Specific: no reviews
@@ -320,7 +320,7 @@ class TestPDFPathResolution:
     """Test PDF finding logic edge cases."""
 
     def test_find_pdf_fast_empty_source(self):
-        from v5.services.tools.paper_utils import find_pdf_fast
+        from app.services.tools.paper_utils import find_pdf_fast
         # BUG: find_pdf_fast("") doesn't return None — it returns a directory path
         # because Path / "" == the directory itself, which .exists() returns True.
         # Test with a clearly nonexistent source instead.
@@ -328,31 +328,31 @@ class TestPDFPathResolution:
         assert result is None
 
     def test_find_pdf_fast_nonexistent(self):
-        from v5.services.tools.paper_utils import find_pdf_fast
+        from app.services.tools.paper_utils import find_pdf_fast
         result = find_pdf_fast("nonexistent_file_999999.pdf")
         assert result is None
 
     def test_s2_paper_id_no_pdf(self):
         """s2:paperId format has no local PDF."""
-        from v5.services.tools.paper_utils import _extract_doi_from_source
+        from app.services.tools.paper_utils import _extract_doi_from_source
         result = _extract_doi_from_source("s2:abc123def")
         assert result is None
 
     def test_doi_extraction_from_source(self):
-        from v5.services.tools.paper_utils import _extract_doi_from_source
+        from app.services.tools.paper_utils import _extract_doi_from_source
         # Format: Journal_10.XXXX_rest.pdf
         result = _extract_doi_from_source("ACS_Energy_Lett_10.1021_acsenergylett.3c01234.pdf")
         assert result is not None
         assert result.startswith("10.")
 
     def test_non_doi_source_returns_self(self):
-        from v5.services.tools.paper_utils import _extract_doi_from_source
+        from app.services.tools.paper_utils import _extract_doi_from_source
         result = _extract_doi_from_source("Nature_2021_s41467-021-26121-1.pdf")
         # Nature format doesn't have DOI in name, returns self
         assert result is not None
 
     def test_unknown_journal_hash(self):
-        from v5.services.tools.paper_utils import _extract_doi_from_source
+        from app.services.tools.paper_utils import _extract_doi_from_source
         result = _extract_doi_from_source("Unknown_Journal_abc123hash.pdf")
         # May return self (no DOI pattern)
         assert result is not None
@@ -376,7 +376,7 @@ class TestConcurrencySafety:
 
     def test_state_context_independent(self):
         """Multiple StateContext instances should not share state."""
-        from v5.services.agent_sm import StateContext
+        from app.services.agent_sm import StateContext
         ctx1 = StateContext()
         ctx2 = StateContext()
         ctx1.fulltext_sources.add("paper_a.pdf")
@@ -414,7 +414,7 @@ class TestPaperMetadata:
 
     def test_metadata_from_search_results(self):
         """Simulate metadata extraction from search results (3 different formats)."""
-        from v5.services.agent_sm import StateContext
+        from app.services.agent_sm import StateContext
         ctx = StateContext()
 
         # Format 1: local search
@@ -513,7 +513,7 @@ class TestRegressions:
     def test_tool_failure_not_counted_in_budget(self):
         """Design: tool failures should NOT count against read budget."""
         # Verify the logic in _run_read: only successful reads increment counters
-        from v5.services.agent_sm import MIN_READ_CHARS
+        from app.services.agent_sm import MIN_READ_CHARS
         result_chars = MIN_READ_CHARS - 1  # below threshold
         is_success = (result_chars >= MIN_READ_CHARS)
         assert not is_success  # failure should not count

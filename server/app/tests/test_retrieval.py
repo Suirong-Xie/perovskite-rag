@@ -9,7 +9,7 @@ import os
 # Ensure import path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from v5.services.retrieval import _expand_queries, _merge_results
+from app.services.retrieval import _expand_queries, _merge_results
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -288,7 +288,7 @@ class TestBM25Smoke:
 
     def test_build_bm25_index(self):
         """Test that BM25 index builds without crashing."""
-        from v5.services.retrieval import _build_bm25
+        from app.services.retrieval import _build_bm25
         idx = _build_bm25()
         assert "texts" in idx
         assert "doc_freqs" in idx
@@ -300,7 +300,7 @@ class TestBM25Smoke:
 
     def test_bm25_search_returns_results(self):
         """BM25 search should return results if index has data."""
-        from v5.services.retrieval import _bm25_search
+        from app.services.retrieval import _bm25_search
         results = _bm25_search("perovskite solar cell", top_k=5)
         # May be empty if no index data, that's OK
         assert isinstance(results, list)

@@ -19,10 +19,10 @@ import time
 import argparse
 from typing import Optional
 
-# 确保能找到 server/v5 模块
+# 确保能找到 server/app 模块
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "server"))
 
-from v5.services.semantic_scholar_service import search_semantic_scholar_bulk, search_semantic_scholar
+from app.services.semantic_scholar_service import search_semantic_scholar_bulk, search_semantic_scholar
 
 # ── 配置 ──
 
