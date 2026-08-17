@@ -1,5 +1,5 @@
 """
-Test fixtures for PerovskiteGPT V5 agent test suite.
+Test fixtures for PerovskiteGPT v1.5 agent test suite.
 Mock external dependencies that may not be available in test environment.
 """
 import sys

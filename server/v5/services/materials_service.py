@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — 材料科学服务
+PerovskiteGPT v1.5 — 材料科学服务
 基于 Pymatgen 的钙钛矿晶体结构分析工具
 
 提供的 Agent 工具:

@@ -9,7 +9,7 @@ PDF 文本提取：PyMuPDF → 纯文本。处理 Nature 双栏排版。
 
 ### llm_chunker_v5.py ✅ 主力分块
 基于 DeepSeek LLM 的语义分块。输入：PDF 提取文本 → 输出：chunked JSONL。
-V5 特性：自动去除参考文献/致谢噪声，按语义边界切分。
+v1.5 特性：自动去除参考文献/致谢噪声，按语义边界切分。
 
 ### llm_semantic_chunker.py 🧪 实验
 语义分块的另一种策略，基于句子嵌入相似度切分。

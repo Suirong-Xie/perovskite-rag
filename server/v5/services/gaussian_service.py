@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — Gaussian 16 DFT 计算服务
+PerovskiteGPT v1.5 — Gaussian 16 DFT 计算服务
 
 在 perovskite-node 上提交 Gaussian 作业并监控。
 """

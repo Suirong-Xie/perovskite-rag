@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — 检索服务（P1 增强版）
+PerovskiteGPT v1.5 — 检索服务（P1 增强版）
 
 新增：
   - 查询扩展：一个查询 → 多个变体 → 合并去重
@@ -19,7 +19,7 @@ from . import vector_search
 
 # S2 向量库已覆盖 Nature，统一用 S2
 vector_search.init_s2(str(S2_VECTOR_DB_DIR))
-print(f"[V5] S2 vector search: {S2_VECTOR_DB_DIR}", flush=True)
+print(f"[v1.5] S2 vector search: {S2_VECTOR_DB_DIR}", flush=True)
 
 # ── 缓存 ──
 _cache: dict = {}
@@ -67,7 +67,7 @@ def _build_bm25():
     N = len(texts)
     avg_dl = sum(len(t["tokens"]) for t in texts) / max(N, 1)
     _bm25_index = {"texts": texts, "doc_freqs": doc_freqs, "avg_dl": avg_dl, "N": N}
-    print(f"[V5] BM25 index built: {N} docs, {len(doc_freqs)} terms", flush=True)
+    print(f"[v1.5] BM25 index built: {N} docs, {len(doc_freqs)} terms", flush=True)
     return _bm25_index
 
 
@@ -364,7 +364,7 @@ def search_papers(query: str, top_k: int = None,
         r["rank"] = i + 1
 
     elapsed = time.time() - start
-    print(f"[V5] SEARCH({log_detail}{'+bm25' if hybrid else ''}+s2): "
+    print(f"[v1.5] SEARCH({log_detail}{'+bm25' if hybrid else ''}+s2): "
           f"'{query[:60]}' → {len(ranked)} results in {elapsed:.2f}s "
           f"({len(queries)} queries, {len(all_results)} raw)", flush=True)
 

@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — 会话持久化
+PerovskiteGPT v1.5 — 会话持久化
 管理 session 元数据和消息历史
 """
 import json

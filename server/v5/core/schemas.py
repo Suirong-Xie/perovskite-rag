@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — Pydantic 数据模型
+PerovskiteGPT v1.5 — Pydantic 数据模型
 """
 from typing import Optional
 from pydantic import BaseModel

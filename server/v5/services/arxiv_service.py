@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — arXiv API 服务
+PerovskiteGPT v1.5 — arXiv API 服务
 
 提供的 Agent 工具:
   - search_arxiv:       搜索 arXiv 预印本 (标题/摘要/作者/PDF链接)

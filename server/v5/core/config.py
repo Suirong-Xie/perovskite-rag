@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — 统一配置管理
+PerovskiteGPT v1.5 — 统一配置管理
 所有配置从环境变量读取，支持 .env 文件
 """
 import os

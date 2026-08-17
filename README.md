@@ -1,8 +1,8 @@
-# PerovskiteGPT V5 — Sunny
+# PerovskiteGPT v1.5 — Sunny
 
 面向钙钛矿太阳能电池研究的 AI 研究助手。支持文献搜索、深度阅读、材料计算。
 
-**当前版本：V5**（FastAPI + DeepSeek ReAct Agent）
+**当前版本：v1.5**（FastAPI + DeepSeek ReAct Agent）
 
 ## 核心能力
 
@@ -73,7 +73,7 @@ python server/v5/main.py
 # → http://localhost:8002
 ```
 
-## V5 API 端点
+## v1.5 API 端点
 
 | 端点 | 方法 | 说明 |
 |------|------|------|

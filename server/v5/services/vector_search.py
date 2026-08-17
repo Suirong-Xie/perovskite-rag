@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — 向量检索核心
+PerovskiteGPT v1.5 — 向量检索核心
 
 基于 numpy 的余弦相似度检索，配合 Ollama mxbai-embed-large 做 query 向量化。
 支持 journal_rank 加权提升 Nature 系列期刊排名。
@@ -354,7 +354,7 @@ def search_s2(
 # ── CLI ──
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PerovskiteGPT V5 向量检索")
+    parser = argparse.ArgumentParser(description="PerovskiteGPT v1.5 向量检索")
     parser.add_argument("query", type=str, help="英文搜索查询")
     parser.add_argument("--top_k", type=int, default=10)
     parser.add_argument("--no-journal-boost", action="store_true")

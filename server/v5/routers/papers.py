@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — 论文 + PDF API Router
+PerovskiteGPT v1.5 — 论文 + PDF API Router
 """
 import os
 import re
@@ -131,5 +131,5 @@ def get_pdf(file_id: str, page: Optional[int] = Query(None)):
 
 @router.get("/api/sessions/{session_id}/refs")
 async def get_session_refs(session_id: str):
-    """refs.json 已废弃（v5 PDF 高亮直接嵌入 PDF 文件）"""
+    """refs.json 已废弃（v1.5 PDF 高亮直接嵌入 PDF 文件）"""
     return {}

@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — Agent Loop Engine
+PerovskiteGPT v1.5 — Agent Loop Engine
 ReAct-style agent: Think → Tool Call → Observe → Repeat → Answer
 
 工具通过 LLM 文本输出中的 <tool_call> JSON 块来调用,
@@ -101,7 +101,7 @@ AGENT_SYSTEM_PROMPT = """你是 Sunny，钙钛矿太阳能电池领域的 AI 研
 
 
 def log(msg: str):
-    print(f"[V5:Agent] {msg}", flush=True)
+    print(f"[v1.5:Agent] {msg}", flush=True)
 
 
 # ── Context 压缩 ──
@@ -219,7 +219,7 @@ async def run_agent_loop(
     mode: str = "auto",
 ) -> AsyncGenerator[AgentEvent, None]:
     """
-    Agent 循环 — 状态机驱动 (v5.3 多模式)。
+    Agent 循环 — 状态机驱动 (v1.5 多模式)。
 
     状态机流程由 mode 决定:
       auto:    _classify_intent → chat|research

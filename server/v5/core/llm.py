@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — LLM Client 抽象层
+PerovskiteGPT v1.5 — LLM Client 抽象层
 支持 OpenClaw Gateway（Sunny agent）和 DeepSeek API
 """
 import json

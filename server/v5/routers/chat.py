@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — 聊天 API Router
+PerovskiteGPT v1.5 — 聊天 API Router
 POST /api/chat → 启动生成任务 → SSE stream
 """
 import json
@@ -28,7 +28,7 @@ _task_queues: dict[str, asyncio.Queue] = {}  # task_id → asyncio.Queue (SSE pu
 
 
 def log(msg: str):
-    print(f"[V5] {msg}", flush=True)
+    print(f"[v1.5] {msg}", flush=True)
 
 
 # ── 思考链路构建 ──

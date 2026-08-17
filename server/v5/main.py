@@ -1,6 +1,6 @@
 #!/data1/perovskite-rag/.RAGenv/bin/python3
 """
-PerovskiteGPT V5 — Sunny-RAG 科研 Agent（模块化架构）
+PerovskiteGPT v1.5 — Sunny-RAG 科研 Agent（模块化架构）
 架构:
   - core/    → 配置、LLM 抽象、数据模型
   - services/ → 会话、检索、翻译、标注、Agent 循环
@@ -36,8 +36,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="PerovskiteGPT V5",
-    version="5.0.0",
+    title="PerovskiteGPT v1.5",
+    version="1.5.0",
     description="Sunny-RAG 科研 Agent — 模块化架构",
     lifespan=lifespan,
 )
@@ -57,14 +57,14 @@ async def index():
     html_path = V5_PATH / "web_ui.html"
     if html_path.exists():
         return HTMLResponse(html_path.read_text(encoding="utf-8"))
-    return HTMLResponse("<h1>PerovskiteGPT V5</h1><p>web_ui.html 尚未创建</p>")
+    return HTMLResponse("<h1>PerovskiteGPT v1.5</h1><p>web_ui.html 尚未创建</p>")
 
 
 # ── 健康检查 ──
 @app.get("/api/health")
 async def health():
     return {
-        "version": "5.0.0",
+        "version": "1.5.0",
         "status": "ok",
         "sessions": len(store.sessions),
     }
@@ -73,12 +73,12 @@ async def health():
 # ── 启动 ──
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="PerovskiteGPT V5 Server")
+    parser = argparse.ArgumentParser(description="PerovskiteGPT v1.5 Server")
     parser.add_argument("--port", type=int, default=8002)
     parser.add_argument("--host", type=str, default="0.0.0.0")
     args = parser.parse_args()
 
-    print(f"🚀 PerovskiteGPT V5 starting on http://{args.host}:{args.port}")
+    print(f"🚀 PerovskiteGPT v1.5 starting on http://{args.host}:{args.port}")
     print(f"📂 Config from: .env, core/config.py")
     print(f"📚 Papers directory: {PAPERS_DIR}")
     print(f"🧠 LLM Gateway: openclaw/sunny")

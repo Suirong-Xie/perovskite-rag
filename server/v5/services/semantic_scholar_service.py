@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — Semantic Scholar API 服务
+PerovskiteGPT v1.5 — Semantic Scholar API 服务
 
 提供的 Agent 工具:
   - search_semantic_scholar: 搜索学术论文 (2亿+ 覆盖, 含引用数/DOI)

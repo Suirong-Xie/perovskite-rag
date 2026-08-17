@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — 会话管理 API Router
+PerovskiteGPT v1.5 — 会话管理 API Router
 """
 from fastapi import APIRouter
 from ..services.session_store import store

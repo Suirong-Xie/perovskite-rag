@@ -1,5 +1,5 @@
 """
-PerovskiteGPT V5 — PDF 高亮元数据提取
+PerovskiteGPT v1.5 — PDF 高亮元数据提取
 
 只做文本分析和匹配，不修改 PDF 文件。
 所有视觉高亮由前端 pdf-reader.html 的 CSS overlay 完成。
@@ -14,7 +14,7 @@ from ..core.config import V5_DIR
 
 
 def log(msg: str):
-    print(f"[V5] {msg}", flush=True)
+    print(f"[v1.5] {msg}", flush=True)
 
 
 # ── IDF 词频（惰性构建） ──

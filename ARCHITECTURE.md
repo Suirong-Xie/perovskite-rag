@@ -1,4 +1,4 @@
-# PerovskiteGPT V5 — 系统架构文档
+# PerovskiteGPT v1.5 — 系统架构文档
 
 > 最后更新: 2026-07-10
 > 状态: P1 完成 (Semantic Scholar 接入) → P2 待启动
@@ -372,4 +372,4 @@ PDF:     pdftotext (poppler) + PyMuPDF (pipeline)
 | 2026-07-10 | 项目清理: 消除 sunny-rag/ 历史目录, 删除 800MB 冗余 |
 | 2026-07-08 | P3: Pymatgen 材料工具整合 (analyze_perovskite + search_materials) |
 | 2026-07-02 | Phase 2: Agent Loop + DeepSeek + 前端重设计 |
-| 2026-06-28 | Phase 1: V5 模块化架构搭建 |
+| 2026-06-28 | Phase 1: v1.5 模块化架构搭建 |
