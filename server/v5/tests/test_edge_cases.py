@@ -196,14 +196,17 @@ class TestPromptIntegrity:
     def test_respond_prompt_format(self):
         from v5.services.agent_sm import RESPOND_PROMPT
         formatted = RESPOND_PROMPT.format(
+            context_hint="",
+            style_hint="",
             n_fulltext=3,
             fulltext_list="  [1] Nature_2023_test.pdf\n  [2] Science_2022_test.pdf",
             n_nofulltext=1,
             nofulltext_list="  [1] JACS_2021_test.pdf",
-            unread_summary="(无)",
+            format_instruction="",
         )
         assert "3" in formatted
         assert "1" in formatted
+        assert "Nature_2023_test.pdf" in formatted
 
     def test_quick_read_prompt_format(self):
         from v5.services.agent_sm import QUICK_READ_PROMPT

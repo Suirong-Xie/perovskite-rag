@@ -216,15 +216,18 @@ async def run_agent_loop(
     history: list[dict],
     pool=None,
     followup_question: str = "",
+    mode: str = "auto",
 ) -> AsyncGenerator[AgentEvent, None]:
     """
-    Agent 循环 — 状态机驱动 (v5.2 渐进式)。
+    Agent 循环 — 状态机驱动 (v5.3 多模式)。
 
-    状态机流程:
-      首轮: RETRIEVE → QUICK_READ → RESPOND
-      跟进: DEEP_READ → RESPOND
-
-    每个状态有独立预算，工具失败不计入预算。
+    状态机流程由 mode 决定:
+      auto:    _classify_intent → chat|research
+      chat:    DIRECT → RESPOND
+      survey:  RETRIEVE → QUICK_READ → RESPOND
+      deep:    RETRIEVE → QUICK_READ → DEEP_READ → RESPOND
+      read:    QUICK_READ → RESPOND (no RETRIEVE)
+      compute: flexible (search optional, tools open)
 
     Yields:
         AgentEvent of types: thinking, tool_call, tool_result, text, done, error, state
@@ -262,6 +265,7 @@ async def run_agent_loop(
         AGENT_SYSTEM_PROMPT=AGENT_SYSTEM_PROMPT,
         paper_pool=pool,
         followup_question=followup_question,
+        mode=mode,
     )
 
     # 委托给状态机，直接转发所有事件

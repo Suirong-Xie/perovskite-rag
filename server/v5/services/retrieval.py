@@ -14,14 +14,12 @@ import math
 from pathlib import Path
 from typing import Optional
 from collections import defaultdict
-from ..core.config import VECTOR_DB_DIR, SEARCH_DEFAULT_TOP_K, S2_VECTOR_DB_DIR, S2_ENABLED
+from ..core.config import SEARCH_DEFAULT_TOP_K, S2_VECTOR_DB_DIR
 from . import vector_search
 
-# 初始化向量检索
-vector_search.init(str(VECTOR_DB_DIR))
-if S2_ENABLED:
-    vector_search.init_s2(str(S2_VECTOR_DB_DIR))
-    print(f"[V5] S2 vector search enabled: {S2_VECTOR_DB_DIR}", flush=True)
+# S2 向量库已覆盖 Nature，统一用 S2
+vector_search.init_s2(str(S2_VECTOR_DB_DIR))
+print(f"[V5] S2 vector search: {S2_VECTOR_DB_DIR}", flush=True)
 
 # ── 缓存 ──
 _cache: dict = {}
@@ -42,7 +40,7 @@ def _build_bm25():
     if _bm25_index is not None:
         return _bm25_index
 
-    data_dir = VECTOR_DB_DIR
+    data_dir = S2_VECTOR_DB_DIR
     txt_path = data_dir / "texts.jsonl"
     if not txt_path.exists():
         _bm25_index = {"texts": [], "doc_freqs": {}, "avg_dl": 0, "N": 0}
@@ -343,15 +341,7 @@ def search_papers(query: str, top_k: int = None,
     log_detail = "expanded" if len(queries) > 1 else "single"
 
     for q in queries:
-        use_s2 = include_s2 and S2_ENABLED
-        if use_s2:
-            sem_results = vector_search.search_all(
-                q, top_k=max(top_k * 2, 10),
-                journal_boost=True, include_s2=True,
-            )
-        else:
-            sem_results = vector_search.search(q, top_k=max(top_k * 2, 10),
-                                              journal_boost=True)
+        sem_results = vector_search.search_s2(q, top_k=max(top_k * 2, 10))
 
         if hybrid:
             bm25_results = _bm25_search(q, top_k=top_k * 2)
@@ -374,8 +364,7 @@ def search_papers(query: str, top_k: int = None,
         r["rank"] = i + 1
 
     elapsed = time.time() - start
-    s2_tag = "+s2" if (include_s2 and S2_ENABLED) else ""
-    print(f"[V5] SEARCH({log_detail}{'+bm25' if hybrid else ''}{s2_tag}): "
+    print(f"[V5] SEARCH({log_detail}{'+bm25' if hybrid else ''}+s2): "
           f"'{query[:60]}' → {len(ranked)} results in {elapsed:.2f}s "
           f"({len(queries)} queries, {len(all_results)} raw)", flush=True)
 

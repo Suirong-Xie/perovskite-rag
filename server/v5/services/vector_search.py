@@ -283,6 +283,74 @@ def search_all(
     return merged
 
 
+def search_s2(
+    query: str,
+    top_k: int = 10,
+) -> list[dict]:
+    """S2-only 语义搜索（已替代 Nature + S2 双集合）。
+
+    S2 已覆盖 Nature 论文，无需单独维护 Nature 向量库。
+    Tier 1 (全文) ×0.9, Tier 2 (摘要) ×0.8, 外加引用数 boost。
+    """
+    s2_vecs, s2_texts = _ensure_s2_loaded()
+    if s2_vecs is None or s2_texts is None:
+        return []
+
+    # 获取 query 向量
+    resp = requests.post(OLLAMA_EMBED_URL,
+                         json={"model": EMBED_MODEL, "input": [query]},
+                         timeout=30)
+    resp.raise_for_status()
+    vec = np.array(resp.json()["embeddings"][0], dtype=np.float32)
+    norm = np.linalg.norm(vec)
+    if norm > 0:
+        vec /= norm
+
+    # 余弦相似度
+    s2_sims = s2_vecs @ vec
+    cand = min(top_k * 3, len(s2_sims))
+    s2_top_idx = np.argpartition(s2_sims, -cand)[-cand:]
+    s2_top_idx = s2_top_idx[np.argsort(-s2_sims[s2_top_idx])]
+
+    results = []
+    for idx in s2_top_idx[:top_k]:
+        rec = s2_texts[idx]
+        tier = rec.get("_s2_tier", 2)
+        citations = rec.get("_s2_citation_count", 0) or 0
+
+        tier_weight = 0.9 if tier == 1 else 0.8
+        citation_boost = _s2_citation_boost(citations)
+        score = float(s2_sims[idx]) * tier_weight * citation_boost
+
+        results.append({
+            "rank": 0,
+            "similarity": round(score, 4),
+            "journal_rank": rec.get("journal_rank", 8),
+            "journal_name": rec.get("journal", "Unknown"),
+            "source": rec.get("source", ""),
+            "content": (rec.get("content", "") or "")[:6000],
+            "_s2_citation_count": citations,
+            "_s2_year": rec.get("_s2_year"),
+            "_s2_tier": tier,
+            "_s2_paper_id": rec.get("_s2_paper_id", ""),
+            "_s2_doi": rec.get("_s2_doi", ""),
+            "is_s2": True,
+        })
+
+    # 归一化 + 重排
+    if results:
+        max_score = max(r["similarity"] for r in results)
+        if max_score > 0:
+            for r in results:
+                r["similarity"] = round(r["similarity"] / max_score, 4)
+
+    results.sort(key=lambda x: x["similarity"], reverse=True)
+    for i, r in enumerate(results):
+        r["rank"] = i + 1
+
+    return results
+
+
 # ── CLI ──
 
 if __name__ == "__main__":

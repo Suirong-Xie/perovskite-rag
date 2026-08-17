@@ -87,12 +87,13 @@ def _strip_suggestions_block(text: str) -> str:
 
 
 async def run_agent_generation(task_id: str, sid: str, user_message: str, pool=None,
-                               pool_existed: bool = False):
+                               pool_existed: bool = False, mode: str = "auto"):
     """后台运行 Agent 循环，将事件转为 chunks 写入 _tasks[task_id].chunks。
 
     Args:
         pool: SessionPaperPool | None — 会话级论文池（跨轮复用）
         pool_existed: 论文池是否从磁盘加载（vs 本次预搜索新建）
+        mode: Agent 模式 (chat|survey|deep|read|compute|auto)
     """
     full_content = ""
     in_respond = False  # 只有 RESPOND 阶段的 text 才累积到最终回答
@@ -112,7 +113,8 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str, pool=N
         followup_q = clean_msg if is_followup else ""
 
         async for event in run_agent_loop(task_id, sid, user_message, history,
-                                           pool=pool, followup_question=followup_q):
+                                           pool=pool, followup_question=followup_q,
+                                           mode=mode):
             async with _tasks_lock:
                 if _tasks[task_id].cancelled:
                     log(f"TASK {task_id} cancelled mid-agent")
@@ -356,18 +358,17 @@ async def run_agent_generation(task_id: str, sid: str, user_message: str, pool=N
 
 
 async def run_chat_pipeline(task_id: str, sid: str, req: ChatRequest):
-    """Agent 驱动流水线：翻译 → 系统预搜索 → Agent 自主搜索/阅读/回答
-
-    关键设计：系统在 Agent 循环前强制做一次初始搜索，将真实存在的
-    File ID 注入 Agent 上下文。这样即使 LLM 跳过搜索直接回答，它看到
-    的也是真实 File ID，不会凭空编造。
-    """
+    """Agent 驱动流水线：翻译 → 系统预搜索（按 mode 可选） → Agent 自主搜索/阅读/回答"""
     from ..services.retrieval import search_papers
     from ..services.paper_pool import SessionPaperPool
+    from ..core.modes import resolve_mode
+
+    agent_mode = resolve_mode(req.mode)
+    log(f"TASK {task_id} MODE: {agent_mode.label} ({agent_mode.key})")
 
     # 0. 加载会话级论文池
     pool = None
-    pool_existed = False  # 区分 "从磁盘加载的已有池" vs "本次新建的"
+    pool_existed = False
     pool_data = store.get_paper_pool(sid)
     if pool_data:
         pool = SessionPaperPool.from_dict(pool_data)
@@ -379,14 +380,18 @@ async def run_chat_pipeline(task_id: str, sid: str, req: ChatRequest):
     search_hint = await translate_to_english(req.message)
     log(f"TASK {task_id} TRANSLATE: '{req.message[:50]}' → '{search_hint[:80]}'")
 
-    # 话题漂移检测：如果新问题和论文池不相关，清空池
+    # 话题漂移检测
     if pool and pool.total_count > 0:
         if pool.detect_topic_drift(search_hint):
             log(f"TASK {task_id} POOL: topic drift detected, resetting pool")
             pool = None
 
-    # 2. 系统预搜索：查询扩展 + BM25 混合检索，结果存入 TaskInfo.sources
-    initial_results = search_papers(search_hint, top_k=5, expand=True, hybrid=True)
+    # 2. 系统预搜索 — 根据 mode 决定是否跳过
+    if agent_mode.skip_pre_search:
+        log(f"TASK {task_id} PRE-SEARCH: skipped (mode={agent_mode.key})")
+        initial_results = []
+    else:
+        initial_results = search_papers(search_hint, top_k=5, expand=True, hybrid=True)
     if initial_results:
         # 标记每个结果是否有本地 PDF 全文
         for r in initial_results:
@@ -447,8 +452,9 @@ async def run_chat_pipeline(task_id: str, sid: str, req: ChatRequest):
             except Exception:
                 pass
 
-    # 4. Agent 循环：LLM 自主搜索/阅读/回答（预搜索结果已在上下文中）
-    await run_agent_generation(task_id, sid, user_message, pool, pool_existed=pool_existed)
+    # 4. Agent 循环：LLM 自主搜索/阅读/回答
+    await run_agent_generation(task_id, sid, user_message, pool,
+                               pool_existed=pool_existed, mode=agent_mode.key)
 
     # 5. 保存论文池（跨轮复用）
     if pool and pool.total_count > 0:

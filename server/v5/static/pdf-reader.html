@@ -258,6 +258,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dis
 let pdfDoc = null, currentScale = 1.4, currentPage = 1, totalPages = 0;
 let highlightData = {}; // {fid: {pages:[], chunks:[{pages:[], text:"", idx:0}]}}
 let currentFid = null;
+let _renderGen = 0;   // 渲染版本号，每次新 open 递增，防止旧渲染残留
 
 // ── API (called from parent) ──
 // ── 监听父页面的 postMessage ──
@@ -274,19 +275,24 @@ window.addEventListener('message', async function(e) {
 window.PDFReader = {
   open: async function(fid, pdfUrl) {
     currentFid = fid;
+    const myGen = ++_renderGen;  // 获取新的渲染版本号
     document.getElementById('docTitle').textContent = fid;
     document.getElementById('pages').innerHTML = '<div class="loading"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>';
     try {
       const task = pdfjsLib.getDocument(pdfUrl);
       pdfDoc = await task.promise;
+      // 在等待 PDF 加载期间，如果又触发了新的 open，放弃本次渲染
+      if(myGen !== _renderGen) return;
       totalPages = pdfDoc.numPages;
       document.getElementById('pageTotal').textContent = '/ ' + totalPages;
       currentPage = 1;
-      await renderAllPages();
+      await renderAllPages(myGen);
+      // 渲染完成后再次检查
+      if(myGen !== _renderGen) return;
       updateNav();
-      // 渲染完成后，尝试用已缓存的高亮数据
       if(highlightData[currentFid]) await renderHighlights();
     } catch(e) {
+      if(myGen !== _renderGen) return;
       document.getElementById('pages').innerHTML = '<div class="empty-state"><div class="icon">⚠</div><p>加载失败: '+e.message+'</p></div>';
     }
   },
@@ -312,13 +318,18 @@ window.PDFReader = {
 };
 
 // ── Rendering ──
-async function renderAllPages() {
+async function renderAllPages(gen) {
   const container = document.getElementById('pages');
   container.innerHTML = '';
   const dpr = window.devicePixelRatio || 1;
 
   for(let i = 1; i <= totalPages; i++) {
+    // 每次循环前检查：渲染版本是否已过期
+    if(gen !== undefined && gen !== _renderGen) return;
+
     const page = await pdfDoc.getPage(i);
+    if(gen !== undefined && gen !== _renderGen) return;
+
     const vp = page.getViewport({scale: currentScale * dpr});
     const logicalVp = page.getViewport({scale: currentScale});
 
@@ -456,8 +467,7 @@ async function setZoom(s) {
   if(s === currentScale) return;
   currentScale = s;
   document.getElementById('zoomLabel').textContent = Math.round(s * 100) + '%';
-  await renderAllPages();
-  // Scroll to approximate position
+  await renderAllPages(_renderGen);
   const target = document.querySelector('.page-wrap[data-page="'+currentPage+'"]');
   if(target) target.scrollIntoView({block:'start'});
 }

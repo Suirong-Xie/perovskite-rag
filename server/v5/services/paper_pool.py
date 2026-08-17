@@ -89,6 +89,36 @@ def _keyword_overlap(text_a: str, text_b: str) -> float:
     return len(overlap) / min(len(tokens_a), len(tokens_b))
 
 
+# 测量/数据相关关键词 — 用于数据查询类问题的论文选择
+_DATA_CONTENT_KW = [
+    "thickness", "profilomet", "cross-section", "cross section",
+    "SEM", "TEM", "AFM", "XRD", "XPS", "UV-Vis", "ellipsomet",
+    "measured", "measurement", "nm thick", "µm thick", "nm,",
+    "wt%", "at%", "concentration", "doping ratio",
+    "PCE of", "efficiency of", "achieved", "obtained",
+    "reported", "demonstrat", "exhibited", "showed a",
+    "V_oc", "J_sc", "FF", "EQE",
+    "厚度", "测量", "表征", "截面", "轮廓仪",
+]
+
+
+def _data_content_score(paper: dict) -> float:
+    """评分论文是否包含测量数据/量化信息（0-1）。
+
+    检查 content_preview、title 中是否出现测量相关关键词。
+    用于数据查询类问题的论文优选。
+    """
+    text = (
+        (paper.get("content_preview", "") or "")
+        + " " + (paper.get("title", "") or "")
+    ).lower()
+    if not text.strip():
+        return 0.0
+    score = sum(1 for kw in _DATA_CONTENT_KW if kw.lower() in text)
+    # 归一化：最高可能 ~10 个匹配 → 0-1 范围
+    return min(score / 10.0, 1.0)
+
+
 class SessionPaperPool:
     """会话级论文池。"""
 
@@ -188,7 +218,8 @@ class SessionPaperPool:
     # ── 代表性论文选择 ──
 
     def select_representative(
-        self, n: int = 3, question: str = "", question_type: str = "broad"
+        self, n: int = 3, question: str = "", question_type: str = "broad",
+        response_style: str = "",
     ) -> list[dict]:
         """选择 n 篇最有代表性的未读论文。
 
@@ -196,6 +227,7 @@ class SessionPaperPool:
             n: 最多选择篇数
             question: 用户原始问题（用于关键词重叠评分）
             question_type: "broad"（优先综述）或 "specific"（优先相关实验论文）
+            response_style: 回答风格（data_lookup/how_to/compare/overview）
 
         Returns:
             按优先级排序的论文列表
@@ -203,6 +235,9 @@ class SessionPaperPool:
         unread = self.get_unread()
         if not unread:
             return []
+
+        # 数据查询类：额外加分给含测量数据的论文
+        is_data_lookup = (response_style == "data_lookup")
 
         if question_type == "broad":
             # 优先综述（最多 2 篇），再选实验论文
@@ -217,6 +252,7 @@ class SessionPaperPool:
                     key=lambda p: (
                         _keyword_overlap(question, p.get("content_preview", "")) * 5
                         + p.get("journal_score", 0) * 0.5
+                        + (_data_content_score(p) * 2 if is_data_lookup else 0)
                     ),
                     reverse=True,
                 )
@@ -237,6 +273,7 @@ class SessionPaperPool:
                 key=lambda p: (
                     _keyword_overlap(question, p.get("content_preview", "")) * 5
                     + p.get("journal_score", 0) * 0.3
+                    + (_data_content_score(p) * 3 if is_data_lookup else 0)
                 ),
                 reverse=True,
             )
@@ -254,16 +291,21 @@ class SessionPaperPool:
         return selected[:n]
 
     def select_for_followup(
-        self, n: int = 4, followup_question: str = ""
+        self, n: int = 4, followup_question: str = "",
+        response_style: str = "",
     ) -> list[dict]:
         """根据跟进问题选择最相关的论文。"""
         unread = self.get_unread()
         if not unread:
             return []
 
+        is_data_lookup = (response_style == "data_lookup")
         unread.sort(
-            key=lambda p: _keyword_overlap(
-                followup_question, p.get("content_preview", "")
+            key=lambda p: (
+                _keyword_overlap(
+                    followup_question, p.get("content_preview", "")
+                ) * 5
+                + (_data_content_score(p) * 3 if is_data_lookup else 0)
             ),
             reverse=True,
         )

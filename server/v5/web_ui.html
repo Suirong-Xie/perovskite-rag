@@ -257,6 +257,16 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
   transition: border-color .2s;
 }
 .input-row textarea:focus { border-color: var(--text3) }
+
+/* ── Mode selector ── */
+.mode-row { display: flex; gap: 6px; max-width: 780px; margin: 0 auto 10px; flex-wrap: wrap }
+.mode-btn {
+  padding: 5px 11px; border-radius: 16px; border: 1px solid var(--border2);
+  background: var(--surface); color: var(--text2); font-size: .78rem; cursor: pointer;
+  font-family: inherit; transition: all .15s; white-space: nowrap;
+}
+.mode-btn:hover { border-color: var(--accent); color: var(--accent) }
+.mode-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 500 }
 .input-row textarea::placeholder { color: var(--text3) }
 .input-row button {
   padding: 10px 22px; border-radius: 8px; font-size: .85rem; font-weight: 450;
@@ -359,6 +369,14 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
   </div>
   <div class="messages" id="messages"></div>
   <div class="input-area">
+    <div class="mode-row" id="modeRow">
+      <button class="mode-btn active" data-mode="auto" onclick="setMode('auto',this)">🤖 自动</button>
+      <button class="mode-btn" data-mode="chat" onclick="setMode('chat',this)">💬 问答</button>
+      <button class="mode-btn" data-mode="survey" onclick="setMode('survey',this)">🔍 调研</button>
+      <button class="mode-btn" data-mode="deep" onclick="setMode('deep',this)">📚 深度</button>
+      <button class="mode-btn" data-mode="read" onclick="setMode('read',this)">📖 精读</button>
+      <button class="mode-btn" data-mode="compute" onclick="setMode('compute',this)">🧮 计算</button>
+    </div>
     <div class="input-row">
       <textarea id="inputBox" rows="1" placeholder="输入你的问题…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,130)+'px'"></textarea>
       <button class="btn-send" id="sendBtn" onclick="sendMessage()">发送</button>
@@ -413,7 +431,15 @@ if(typeof marked === 'undefined'){ console.warn('[init] marked.js not loaded, us
 let sid = null, busy = false, hasMsg = false;
 let papers = null, page = 1;
 let ctrl = null, taskId = null;
+let currentMode = localStorage.getItem('agent_mode') || 'auto';
 window._fc = {};
+
+function setMode(mode, btn){
+  currentMode = mode;
+  localStorage.setItem('agent_mode', mode);
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
 
 function setGenerating(on){
   busy = on;
@@ -457,6 +483,11 @@ window.addEventListener('message', function(e){
     localStorage.removeItem('ss');
     sid = null;
   }
+  // 初始化 mode 按钮状态
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === currentMode);
+  });
+
   await renderSessions();
 })();
 
@@ -726,7 +757,7 @@ async function sendMessage(){
   try {
     const r0 = await fetch('/api/chat',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({message:text,session_id:sid})});
+      body:JSON.stringify({message:text,session_id:sid,mode:currentMode})});
     if(!r0.ok){ bubble.innerHTML = '<span class="evt err">请求失败 HTTP '+r0.status+'</span>'; return finishGeneration() }
     const{task_id}=await r0.json(); taskId=task_id; window._fc[task_id]='';
     console.log('[sendMessage] task_id:', task_id);
@@ -915,8 +946,14 @@ const _pdfHighlights = {};
 
 function setPdfHighlights(fid, data){ _pdfHighlights[fid] = data }
 
+let _openPdfPending = null;  // 防止同一 PDF 重复打开
 async function openPdf(src, page){
   const f = fid(src);
+  // 防止快速重复点击同一 PDF
+  if(_openPdfPending === f) return;
+  _openPdfPending = f;
+  setTimeout(() => { if(_openPdfPending === f) _openPdfPending = null; }, 1000);
+
   document.getElementById('pdfPanel').classList.add('on');
   const frame = document.getElementById('pdfFrame');
 
@@ -933,6 +970,8 @@ async function openPdf(src, page){
   if(frame.contentWindow && frame.contentWindow.PDFReader) {
     _send(); return;
   }
+  // 清理旧 onload 防止重复触发
+  frame.onload = null;
   frame.src = '/static/pdf-reader.html';
   frame.onload = _send;
 }

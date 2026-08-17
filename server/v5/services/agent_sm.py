@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 from ..core.config import AGENT_STATE_BUDGETS
 from ..core.schemas import AgentEvent, ToolCall, ToolResult
+from ..core.modes import AgentMode, resolve_mode
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -59,6 +60,7 @@ class StateContext:
 
     # 分类
     question_type: str = "broad"           # "broad" | "specific"
+    intent: str = "research"               # "chat" | "research"
     paper_type: dict[str, str] = field(default_factory=dict)
     # source → "review" | "experimental"
 
@@ -178,6 +180,152 @@ def _classify_question(text: str) -> str:
     return "broad"
 
 
+# ── 意图分类：闲聊 vs 需要文献的研究问题 ──
+
+_CHAT_INTENT_KW = [
+    "什么是", "是什么", "定义", "什么意思", "解释一下",
+    "what is", "what are", "define", "definition", "meaning",
+    "谢谢", "好的", "明白了", "换个说法", "简单说", "总结一下",
+    "thanks", "thank you", "got it", "simpler terms",
+]
+
+_RESEARCH_INTENT_KW = [
+    "找论文", "搜索", "文献", "最新", "进展", "研究",
+    "paper", "search", "find", "recent", "latest", "literature",
+    "对比", "比较", "差异", "区别", "哪个更好",
+    "compare", "comparison", "difference", "which is better",
+    "带隙", "掺杂", "退火", "组分", "稳定性", "数据",
+    "不稳定", "降解", "衰减", "衰退",
+    "bandgap", "doping", "stability", "efficiency",
+    "degradation", "mechanism", "fabrication", "synthesis",
+    "效率", "方法", "机理", "机制", "制备", "表征",
+    "调控", "优化", "改善",
+]
+
+
+def _classify_intent(text: str, is_followup: bool = False,
+                     has_pool: bool = False) -> str:
+    """区分问题意图：chat vs research。
+
+    纯对话/定义/短问题 → chat（跳过搜索，直接回答）
+    有明确文献需求 → research（走 RETRIEVE→READ→RESPOND）
+    """
+    text_lower = text.lower()
+    text_short = len(text) < 50
+
+    chat_score = sum(1 for kw in _CHAT_INTENT_KW if kw in text_lower)
+    research_score = sum(1 for kw in _RESEARCH_INTENT_KW if kw in text_lower)
+
+    # 纯对话短句 → chat
+    if text_short and research_score == 0:
+        return "chat"
+
+    # 跟进 + 论文池 → research（除非纯对话）
+    if is_followup and has_pool and chat_score == 0:
+        return "research"
+
+    if research_score > chat_score:
+        return "research"
+    if chat_score > research_score:
+        return "chat"
+
+    # "what is" + 短问题 → 定义/概念问答，走 chat
+    if text_short and ("what is" in text_lower or "什么是" in text_lower):
+        return "chat"
+
+    # 平局：科研关键词优先
+    if research_score > 0:
+        return "research"
+    return "chat" if text_short else "research"
+
+
+# ── 回答风格分类：判断用户想要什么类型的回答 ──
+
+_DATA_LOOKUP_KW = [
+    "多少", "多大", "多厚", "数值", "数据", "测过", "有没有人测",
+    "具体数值", "具体数据", "实际值", "真实值", "量是多少",
+    "有没有数据", "有没有报道", "有没有报告", "实验值",
+    "how much", "what is the value", "measured value",
+    "reported value", "specific data", "quantitative",
+    "thickness", "thick", "concentration", "concentrations",
+    "整理",  # "整理一个表格/数据"
+]
+
+_HOW_TO_KW = [
+    "怎么", "如何", "怎样", "方法", "方案", "步骤", "流程",
+    "设置", "选取", "选择什么", "用什么", "怎么做",
+    "how to", "how do", "how can", "method", "approach",
+    "procedure", "protocol", "guideline", "recommend",
+]
+
+_FORMAT_REQUEST_KW = [
+    "表格", "列表", "列出", "列举", "清单", "整理成",
+    "table", "list", "bullet", "summarize in",
+    "整理一个", "给我一个", "列一个",
+]
+
+_COMPARE_KW = [
+    "对比", "比较", "差异", "区别", "哪个更好", "哪个更",
+    "优缺点", "优劣", "优劣对比",
+    "compare", "comparison", "difference", "vs", "versus",
+    "which is better", "which one", "pros and cons",
+]
+
+_FRUSTRATION_KW = [
+    "不够具体", "不够详细", "不对",
+    "不是这个意思", "你没理解",
+    "no specific", "not what i", "not specific",
+    "i meant", "what i meant", "that's not",
+    "再查", "再搜", "再看看", "重新", "换一个",
+    "还是没", "还没有", "不够",
+]
+
+
+def _classify_response_style(text: str) -> dict:
+    """检测用户期望的回答风格和格式。
+
+    Returns:
+        {style, format_request, is_dissatisfied}
+        style: "data_lookup" | "how_to" | "compare" | "overview"
+        format_request: "table" | "list" | None
+        is_dissatisfied: bool
+    """
+    text_lower = text.lower()
+
+    scores = {
+        "data_lookup": sum(1 for kw in _DATA_LOOKUP_KW if kw in text_lower),
+        "how_to": sum(1 for kw in _HOW_TO_KW if kw in text_lower),
+        "compare": sum(1 for kw in _COMPARE_KW if kw in text_lower),
+    }
+    best = max(scores, key=scores.get)
+    style = best if scores[best] > 0 else "overview"
+
+    # Format request detection
+    format_request = None
+    for kw in _FORMAT_REQUEST_KW:
+        if kw in text_lower:
+            if kw in ("表格", "table", "整理一个", "整理成"):
+                format_request = "table"
+            elif kw in ("列表", "列出", "列举", "清单", "list", "bullet", "列一个"):
+                format_request = "list"
+            elif kw in ("给我一个", "summarize in"):
+                format_request = "table"  # default to table for "give me a ..."
+            if format_request:
+                break
+
+    # Dissatisfaction detection
+    is_dissatisfied = any(kw in text_lower for kw in _FRUSTRATION_KW)
+    # "没有...吗/？" pattern: user is saying something is missing
+    if not is_dissatisfied and "没有" in text_lower and ("吗" in text_lower or "？" in text_lower or "?" in text_lower):
+        is_dissatisfied = True
+
+    return {
+        "style": style,
+        "format_request": format_request,
+        "is_dissatisfied": is_dissatisfied,
+    }
+
+
 # 综述关键词
 _REVIEW_TITLE_KW = [
     "review", "progress", "advances", "survey", "overview",
@@ -290,68 +438,133 @@ DEEP_READ_PROMPT = """
 """
 
 RESPOND_PROMPT = """
-## 当前阶段：生成回答 (RESPOND)
+## 当前阶段：生成回答
 
-你已阅读了以下论文的全文。回答中**每一个事实性陈述都必须有具体论文支撑**。
+{context_hint}
+{style_hint}
 
 ### 参考资料
-
-**已读全文 ({n_fulltext} 篇)** — 回答的主要依据:
+**有全文 ({n_fulltext} 篇)**:
 {fulltext_list}
 
-**未读全文 ({n_nofulltext} 篇)** — 仅作补充引用:
+**仅摘要 ({n_nofulltext} 篇)**:
 {nofulltext_list}
 
-### 学术引文格式 (严格遵守)
+### 回答要求
+1. **每个事实陈述必须引用出处**：[📄](/api/pdf/FileID) 有全文，[🔗](https://doi.org/DOI) 仅摘要。引用时说明论文发现了什么，不要只放一个链接。
+2. **有量化数据就给出具体数值**，不要只说"改善/提升/降低"。
+3. **不要编造** File ID、数据、论文标题。
+4. **不要提内部流程**（"我搜了X篇/读了Y篇"）。
+5. **如果拿不到用户要的具体数据，诚实说明**，给出最接近的信息或建议如何查找。
 
-每条关键陈述必须使用以下格式精确引用：
+{format_instruction}
+"""
 
-```
-在[Year]年[Journal]的[Title/标识]中[明确报道/发现/证明/提出]：[具体数据或结论]。[📄](/api/pdf/FileID)
-```
+# 简化版 RESPOND prompt — 用于闲聊/简单问答（无需论文引用）
+CHAT_RESPOND_PROMPT = """
+## 当前阶段：直接回答
 
-**要求**：
-1. **必须包含**: 年份、期刊、论文标识（标题/第一作者/文件名中的 ID）
-2. **必须陈述具体发现**: 什么被观测/测量/证明了，附带量化数据
-3. **区分强度**: "明确指出"（强结论）、"报道"（数据点）、"发现"（新现象）、"提出"（理论/模型）
-4. **每个自然段至少一个引用**，每个数据点必须有出处
-5. 无全文的论文仅作补充引用: [🔗](https://doi.org/DOI)
+**重要**：这是一个简单问答或对话。如果对话历史中有上下文，请自然承接前文。
 
-**正确示例**:
-> 在2024年Nature Energy的《Bandgap tuning in mixed-halide perovskites》中，Smith等人明确报道了Br含量从0%增加到20%时带隙从1.55 eV线性增加到1.72 eV，其依据是对30组不同组分的UV-Vis吸收光谱的系统测量。[📄](/api/pdf/Nature_2024_s41586-024-06121-1)
->
-> Zhang等人进一步发现，湿度超过60%时MAPbI₃钙钛矿在24h内完全分解为PbI₂，XRD显示(110)钙钛矿峰强度衰减~80%。[📄](/api/pdf/NatEnergy_2023_s41560-023-01234-5)
+**规则**:
+1. 用用户的语言回答，直接、简洁、准确
+2. 如果你知道答案，基于你的知识直接回答
+3. 如果问题涉及具体的实验数据、最新进展、或你不确定的事实，诚实说明需要查文献
+4. 不要编造数据或引用
+5. 不要使用工具调用标记
+6. 不要提及内部流程（"我搜了/读了"等）
+7. 如果对话历史中有相关论文引用，可以自然地提及
+"""
 
-**错误示例 (绝对禁止)**:
-> ❌ "多项研究表明钙钛矿的稳定性可以通过组分调控改善" — 太笼统，无引用，无数据
-> ❌ "相关实验表明..." — 完全没有引用
-> ❌ "[📄](/api/pdf/xxx)" 单独出现 — 没有说明论文实际发现了什么
+# 调研模式 RESPOND prompt — 结构化概览，关键数据引用
+SURVEY_RESPOND_PROMPT = """
+## 当前阶段：生成调研回答
 
-### 回答结构
-1. **总览**: 用综述论文建立全景框架（如有读综述）
-2. **分述**: 每个专题/维度用具体论文支撑，附数据和引用
-3. **交叉对比**: 如果不同论文对同一现象有不同结论，明确标注分歧
-4. **量化优先**: 只要有数据就不要只说"改善/提升/降低"，给出具体数值
+{context_hint}
+{style_hint}
+
+你已经检索并阅读了相关文献，请快速总结关键发现。
+
+### 回答要求
+1. **先框架后要点**：用1-2句概括整体情况，然后分点列出关键发现
+2. **每个关键数据带引用**：有具体数值和出处
+3. **控制长度**：500-1500字，不要展开过细
+4. **引用格式**：[📄](/api/pdf/FileID) 有全文，[🔗](https://doi.org/DOI) 仅摘要
+
+{format_instruction}
+"""
+
+# 精读模式 RESPOND prompt — 深度论文解读
+READ_RESPOND_PROMPT = """
+## 当前阶段：解读论文
+
+你已阅读了用户指定的论文全文。请从以下维度进行深度分析：
+
+### 回答框架
+
+1. **核心创新**：这篇论文最关键的新发现或新方法是什么？与其他工作相比的独特性在哪？
+
+2. **方法分析**：
+   - 实验/计算方法是否合理？
+   - 有什么潜在的局限或改进空间？
+   - 样品的表征是否充分？
+
+3. **关键数据**：
+   - 列出最重要的量化结果（效率、稳定性、结构参数等）
+   - 这些数据是否令人信服？统计显著性如何？
+
+4. **与其他工作对比**：
+   - 如果论文本身有对比，复述对比结果
+   - 如果你知道相关的工作，可以提及
+
+5. **启发与展望**：
+   - 这篇工作对领域的贡献和影响
+   - 后续可以探索的方向
 
 ### 禁止
-- **禁止调用任何工具** — 纯文本输出
-- **禁止编造 File ID、数据、论文标题**
-- **禁止提及"我读了X篇论文"之类的内部流程**
-- **禁止"多项研究/大量文献/广泛认为"等无引用的笼统表述**
+- 不要使用工具调用
+- 不要编造论文中没有的数据
+- 明确区分"论文中报道的"和"你推断的"
+"""
 
-### 后续探索建议
+# 计算模式 RESPOND prompt — 材料计算步骤化
+COMPUTE_RESPOND_PROMPT = """
+## 当前阶段：材料计算
 
-在回答末尾，根据尚未阅读的论文生成 2-3 个**具体的后续研究方向问题**。
+用户需要你进行材料科学计算或数据查询。请按以下方式呈现结果：
 
-未读论文池:
-{unread_summary}
+### 回答要求
 
-输出格式（严格遵守）:
----
-💡 **继续深入**:
-1. [这里写一个完整的、具体的中文问题？]
-2. [这里写第二个问题？]
----
+1. **展示计算步骤**：
+   - 列出使用的公式及参数来源
+   - 逐步展示计算过程
+   - 给出最终数值结果
+
+2. **结果解读**：
+   - 计算结果意味着什么？
+   - 例如容忍因子 t 在什么范围 → 预测什么晶体结构 → 稳定性如何
+
+3. **数据来源标注**：
+   - 如果是查询 Materials Project 等数据库，标注数据出处
+   - 如果使用经验公式，注明文献来源
+
+4. **不确定性说明**：
+   - 计算方法的局限性
+   - 与实际实验值的典型偏差
+
+### 可用工具
+
+你可以直接调用以下工具：
+- `analyze_perovskite`: 计算容忍因子、八面体因子、晶体结构预测
+- `search_materials`: 查询 Materials Project DFT 数据库
+- `search_papers`: 查找计算参数或公式出处
+- `read_paper`: 阅读相关论文获取实验参考值
+
+使用这些工具获取数据后，整理成清晰的回答。
+
+### 禁止
+- 不要在没有工具验证的情况下声称精确数值
+- 不要混淆 DFT 计算值和实验测量值
 """
 
 
@@ -373,7 +586,7 @@ class AgentStateMachine:
     def __init__(
         self, messages, task_id, use_native_tools,
         execute_tool_fn, run_native_round_fn, AGENT_SYSTEM_PROMPT,
-        paper_pool=None, followup_question="",
+        paper_pool=None, followup_question="", mode="auto",
     ):
         self.messages = messages
         self.task_id = task_id
@@ -384,6 +597,10 @@ class AgentStateMachine:
         self.ctx = StateContext()
         self._safety_valve = MAX_TOTAL_TOOL_CALLS
         self.followup_question = followup_question
+        self.mode = resolve_mode(mode)
+        log(f"TASK {task_id} MODE: {self.mode.label} "
+            f"(search={self.mode.search_budget}, read={self.mode.read_budget}, "
+            f"min_papers={self.mode.min_papers}, path={self.mode.state_path})")
 
         # 论文池集成
         if paper_pool is not None:
@@ -525,20 +742,56 @@ class AgentStateMachine:
             f"RETRIEVE history collapsed into clean summary ({len(summary)} chars)")
 
     async def run(self) -> AsyncGenerator[AgentEvent, None]:
-        max_loops = 8  # 全局安全阀（降低：新状态机路径更短）
+        max_loops = 8  # 全局安全阀
 
-        # ── 判断入口路径 ──
+        # ── 判断入口路径（mode 优先，auto 时用 intent 分类）──
         pool = self.ctx.paper_pool
         has_pool = pool is not None and pool.unread_count > 0
         is_followup = bool(self.followup_question) and has_pool
 
-        if is_followup:
-            log(f"TASK {self.task_id} PATH: follow-up → DEEP_READ → RESPOND "
-                f"(pool: {pool.total_count} papers, unread={pool.unread_count})")
-            state = AgentState.DEEP_READ
-        else:
-            log(f"TASK {self.task_id} PATH: fresh → RETRIEVE → QUICK_READ → RESPOND")
+        # 提取用户问题文本
+        user_text = ""
+        for m in reversed(self.messages):
+            if m.get("role") == "user":
+                raw = m.get("content", "") or ""
+                idx = raw.find("系统已为你预检索")
+                user_text = raw[:idx].strip() if idx != -1 else raw.strip()
+                break
+
+        intent = _classify_intent(user_text, is_followup=is_followup, has_pool=has_pool)
+        self.ctx.intent = intent
+
+        # ── Mode 驱动的路径选择 ──
+        sp = self.mode.state_path
+
+        if sp == "direct":
+            state = AgentState.RESPOND
+            log(f"TASK {self.task_id} PATH: mode={self.mode.key} → direct RESPOND")
+        elif sp == "quick":
+            state = AgentState.QUICK_READ
+            log(f"TASK {self.task_id} PATH: mode={self.mode.key} → QUICK_READ → RESPOND")
+        elif sp == "full":
             state = AgentState.RETRIEVE
+            log(f"TASK {self.task_id} PATH: mode={self.mode.key} → "
+                f"RETRIEVE → {'QUICK_READ → DEEP_READ → ' if self.mode.read_budget > 8 else 'QUICK_READ → '}RESPOND")
+        elif sp == "flexible":
+            # Calculate mode: check if question needs search
+            if intent == "chat" and not has_pool:
+                state = AgentState.RESPOND
+            else:
+                state = AgentState.RETRIEVE
+            log(f"TASK {self.task_id} PATH: mode={self.mode.key} → flexible "
+                f"(intent={intent}, resolved to {state.value})")
+        else:  # "adaptive" or unknown — auto mode
+            if is_followup and has_pool and intent != "chat":
+                state = AgentState.DEEP_READ
+                log(f"TASK {self.task_id} PATH: auto → follow-up → DEEP_READ")
+            elif intent == "chat":
+                state = AgentState.RESPOND
+                log(f"TASK {self.task_id} PATH: auto → chat → RESPOND")
+            else:
+                state = AgentState.RETRIEVE
+                log(f"TASK {self.task_id} PATH: auto → research → RETRIEVE")
 
         for _ in range(max_loops):
             try:
@@ -572,8 +825,9 @@ class AgentStateMachine:
         yield AgentEvent.state_change(AgentState.RETRIEVE.value, self.ctx.state_summary())
 
         # 检查是否已有足够的候选论文（预搜索 + 前序轮次积累）
+        min_papers = self.mode.min_papers
         total_candidates = len(self.ctx.fulltext_sources) + len(self.ctx.unknown_sources)
-        if total_candidates >= MIN_FULLTEXT_PAPERS:
+        if min_papers > 0 and total_candidates >= min_papers:
             log(f"TASK {self.task_id} Already have {total_candidates} candidates "
                 f"(fulltext={len(self.ctx.fulltext_sources)}, "
                 f"unknown={len(self.ctx.unknown_sources)}), skip RETRIEVE")
@@ -587,28 +841,35 @@ class AgentStateMachine:
         self.messages.append({
             "role": "system",
             "content": RETRIEVE_PROMPT.format(
-                min_fulltext=MIN_FULLTEXT_PAPERS,
-                max_llm=BUDGETS["retrieve_llm"],
+                min_fulltext=self.mode.min_papers,
+                max_llm=self.mode.search_budget,
                 nofulltext_list=nofulltext_str,
             ),
         })
 
         llm_rounds = 0
-        max_llm = BUDGETS["retrieve_llm"] * 2
+        max_llm = max(self.mode.search_budget * 2, 2)  # 至少 2 轮
         search_attempts = 0
-        max_search = BUDGETS["retrieve_search"]
+        max_search = self.mode.search_budget
+        min_papers_plenty = self.mode.min_papers * 2
 
         while search_attempts < max_search and llm_rounds < max_llm:
             # 每次搜索前检查：是否已够
-            if len(self.ctx.fulltext_sources) + len(self.ctx.unknown_sources) >= MIN_FULLTEXT_PAPERS * 2:
+            if min_papers_plenty > 0 and len(self.ctx.fulltext_sources) + len(self.ctx.unknown_sources) >= min_papers_plenty:
                 log(f"TASK {self.task_id} RETRIEVE: plenty of candidates, moving to QUICK_READ")
                 break
 
             tool_calls_batch = []
+            # compute 模式开放全部工具，其他模式按状态过滤
+            if self.mode.allow_compute_tools:
+                active_tools = None  # None = 全部工具
+            else:
+                active_tools = _filter_tools(RETRIEVE_TOOLS)
+
             async for event in self._run_native_round(
                 self.task_id, self.ctx.retrieve_llm_calls + 1,
                 self.messages, force_answer=False,
-                allowed_tools=_filter_tools(RETRIEVE_TOOLS),
+                allowed_tools=active_tools,
             ):
                 if event.type == "_tool_call":
                     tool_calls_batch.append(event.data["tool_call"])
@@ -691,8 +952,8 @@ class AgentStateMachine:
     # ── QUICK_READ (首轮快速阅读) ──
 
     async def _run_quick_read(self) -> AsyncGenerator[AgentEvent, None]:
-        """首轮快速阅读: 从论文池选 1-3 篇代表性论文, 读完立即回答。"""
-        max_papers = BUDGETS["quick_read"]
+        """首轮快速阅读: 从论文池选代表性论文, 读完立即回答。"""
+        max_papers = min(self.mode.read_budget, 6)  # 首次阅读最多 6 篇
 
         # 提取用户问题
         user_question = ""
@@ -707,12 +968,14 @@ class AgentStateMachine:
         # ── 从论文池选择代表性论文 ──
         pool = self.ctx.paper_pool
         if pool is not None and pool.unread_count > 0:
+            _style = _classify_response_style(user_question)
             selected = pool.select_representative(
                 n=max_papers, question=user_question,
                 question_type=self.ctx.question_type,
+                response_style=_style["style"],
             )
             log(f"TASK {self.task_id} QUICK_READ: selected {len(selected)} from pool "
-                f"(type={self.ctx.question_type})")
+                f"(type={self.ctx.question_type}, style={_style['style']})")
             # 同步到 ctx
             for p in selected:
                 src = p["source"]
@@ -799,18 +1062,21 @@ class AgentStateMachine:
     # ── DEEP_READ (跟进深入阅读) ──
 
     async def _run_deep_read(self) -> AsyncGenerator[AgentEvent, None]:
-        """跟进深入阅读: 根据用户跟进问题，从论文池选 2-4 篇最相关论文。"""
-        max_papers = BUDGETS["deep_read"]
+        """跟进深入阅读: 根据用户跟进问题，从论文池选最相关论文。"""
+        max_papers = self.mode.read_budget
         pool = self.ctx.paper_pool
 
         log(f"TASK {self.task_id} DEEP_READ: followup='{self.followup_question[:60]}'")
 
         # 从论文池选择
         if pool is not None and pool.unread_count > 0:
+            _style = _classify_response_style(self.followup_question)
             selected = pool.select_for_followup(
                 n=max_papers, followup_question=self.followup_question,
+                response_style=_style["style"],
             )
-            log(f"TASK {self.task_id} DEEP_READ: selected {len(selected)} from pool")
+            log(f"TASK {self.task_id} DEEP_READ: selected {len(selected)} from pool "
+                f"(style={_style['style']})")
             for p in selected:
                 src = p["source"]
                 if src not in self.ctx.paper_meta:
@@ -1160,16 +1426,94 @@ class AgentStateMachine:
             unread_summary = "(无)"
         log(f"TASK {self.task_id} RESPOND: unread_summary={len(unread_summary)} chars")
 
-        respond_prompt = RESPOND_PROMPT.format(
-            n_fulltext=len(self.ctx.fulltext_sources),
-            fulltext_list=fulltext_list,
-            n_nofulltext=len(self.ctx.nofulltext_sources),
-            nofulltext_list=nofulltext_list,
-            unread_summary=unread_summary,
-        )
+        # ── 提取用户问题文本（用于风格分类）──
+        user_text = ""
+        if user_msg:
+            raw = user_msg.get("content", "") or ""
+            idx = raw.find("系统已为你预检索")
+            user_text = raw[:idx].strip() if idx != -1 else raw.strip()
+
+        # ── 回答风格自适应 ──
+        style_info = _classify_response_style(user_text)
+        is_dissatisfied = style_info["is_dissatisfied"]
+        is_followup = bool(self.followup_question)
+
+        # 上下文提示：跟进/不满
+        if is_dissatisfied:
+            context_hint = (
+                "⚠️ 用户对上一轮回答不满意。请直接、具体地切入问题核心。"
+                "如果手头论文没有用户要的精确数据，诚实说明并给出最接近的信息或建议如何查找。"
+            )
+        elif is_followup:
+            context_hint = "这是对上一轮讨论的跟进追问，请自然承接前文，直接切入问题核心。"
+        else:
+            context_hint = ""
+
+        # 风格提示：按问题类型
+        _style_map = {
+            "data_lookup": "**回答风格**：用户问的是具体数据/数值。直接列出数据，有就有、没有就没有。不需要展开框架分析或长篇背景介绍。",
+            "how_to": "**回答风格**：用户问的是方法/方案。给出具体步骤和参数建议，引用文献作为依据。",
+            "compare": "**回答风格**：用户在做对比。并列展示不同选项的差异，用数据支撑对比结论。",
+            "overview": "",
+        }
+        style_hint = _style_map.get(style_info["style"], "")
+
+        # 格式指令：表格/列表
+        _fmt_map = {
+            "table": "**格式要求**：请使用Markdown表格组织数据，让信息一目了然。",
+            "list": "**格式要求**：请使用清晰的编号列表组织内容。",
+        }
+        format_instruction = _fmt_map.get(style_info["format_request"] or "", "")
+
+        log(f"TASK {self.task_id} RESPOND: style={style_info['style']} "
+            f"fmt={style_info['format_request']} "
+            f"dissatisfied={is_dissatisfied} followup={is_followup}")
+
+        # ── 根据 mode 选择 prompt ──
+        has_papers = bool(paper_contents) or len(self.ctx.fulltext_sources) > 0
+        pv = self.mode.prompt_variant
+
+        if pv == "chat" or (pv == "default" and self.ctx.intent == "chat" and not has_papers):
+            respond_prompt = CHAT_RESPOND_PROMPT
+            log(f"TASK {self.task_id} RESPOND: prompt=chat")
+        elif pv == "survey":
+            respond_prompt = SURVEY_RESPOND_PROMPT.format(
+                context_hint=context_hint,
+                style_hint=style_hint,
+                format_instruction=format_instruction,
+            )
+            log(f"TASK {self.task_id} RESPOND: prompt=survey")
+        elif pv == "read":
+            respond_prompt = READ_RESPOND_PROMPT
+            log(f"TASK {self.task_id} RESPOND: prompt=read")
+        elif pv == "compute":
+            respond_prompt = COMPUTE_RESPOND_PROMPT
+            log(f"TASK {self.task_id} RESPOND: prompt=compute")
+        else:
+            # "deep" or "default" with papers → full RESPOND_PROMPT
+            respond_prompt = RESPOND_PROMPT.format(
+                context_hint=context_hint,
+                style_hint=style_hint,
+                n_fulltext=len(self.ctx.fulltext_sources),
+                fulltext_list=fulltext_list,
+                n_nofulltext=len(self.ctx.nofulltext_sources),
+                nofulltext_list=nofulltext_list,
+                format_instruction=format_instruction,
+            )
+            log(f"TASK {self.task_id} RESPOND: prompt={'deep' if pv == 'deep' else 'default'} "
+                f"(fulltext={len(self.ctx.fulltext_sources)}, "
+                f"nofulltext={len(self.ctx.nofulltext_sources)})")
 
         # 干净的上下文：无 tool_call / tool_result 格式，LLM 不会产生 XML 条件反射
         clean_messages = [{"role": "system", "content": self._system_prompt}]
+
+        # ── 注入对话历史（user/assistant 轮次，不含状态机 system 消息）──
+        # 让 LLM 感知当前 session 的上下文，实现连贯的多轮对话
+        conv_turns = [m for m in self.messages if m.get("role") in ("user", "assistant")]
+        if len(conv_turns) > 1:
+            clean_messages.extend(conv_turns)
+            log(f"TASK {self.task_id} RESPOND: injected {len(conv_turns)} conversation turns "
+                f"for context continuity")
 
         if paper_contents:
             # 把所有已读论文正文拼成一个参考资料块（带引文元数据）

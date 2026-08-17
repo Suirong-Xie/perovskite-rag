@@ -9,6 +9,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     paper_id: Optional[str] = None
+    mode: Optional[str] = "auto"  # chat | survey | deep | read | compute | auto
 
 
 class TaskInfo:
