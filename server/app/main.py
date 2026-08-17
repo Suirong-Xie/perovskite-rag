@@ -23,6 +23,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import __version__
 from app.core.config import APP_DIR as APP_PATH, PAPERS_DIR
 from app.services.session_store import store
 from app.routers import chat, sessions, papers
@@ -37,7 +38,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="PerovskiteGPT v1.5",
-    version="1.5.0",
+    version=__version__,
     description="Sunny-RAG 科研 Agent — 模块化架构",
     lifespan=lifespan,
 )
@@ -64,7 +65,7 @@ async def index():
 @app.get("/api/health")
 async def health():
     return {
-        "version": "1.5.0",
+        "version": __version__,
         "status": "ok",
         "sessions": len(store.sessions),
     }
